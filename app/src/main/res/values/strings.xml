@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Krishivantri</string>
+    <string name="brand_tagline">Precision Agrarian Drone Services</string>
+    <string name="role_farmer">Farmer</string>
+    <string name="role_pilot">Drone Pilot</string>
+    <string name="coins_disclaimer">Virtual reward points for gamification only, not redeemable for cash.</string>
+</resources>

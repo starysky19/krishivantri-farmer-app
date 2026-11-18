@@ -1,0 +1,6 @@
+{
+  "name": "Krishivantri",
+  "description": "Agricultural drone spraying app for farmers: map farm boundaries on satellite imagery, calculate acres and spraying price, book via Razorpay or Cash, and track pilot arrival live.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
