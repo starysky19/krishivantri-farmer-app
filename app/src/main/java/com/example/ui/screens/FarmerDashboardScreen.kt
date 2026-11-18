@@ -38,14 +38,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Badge
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.FlightTakeoff
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.ManageAccounts
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Payments
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Remove
@@ -53,7 +58,9 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Stars
+import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -95,6 +102,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -166,6 +174,8 @@ fun FarmerDashboardScreen(
     onSelectPaymentMethod: (PaymentMethod) -> Unit,
     onConfirmOrder: () -> Unit,
     onConsumeBookingSuccess: () -> Unit,
+    onUpdateCredentials: (name: String, phone: String, farmerIdNumber: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
+    onConfirmJobDone: (String) -> Unit,
     onRatePilot: (String, Int) -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
@@ -218,6 +228,7 @@ fun FarmerDashboardScreen(
     }
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var showEditCredentialsDialog by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(mapState.bookingSuccessOrderId) {
         if (mapState.bookingSuccessOrderId != null) {
@@ -236,7 +247,12 @@ fun FarmerDashboardScreen(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
                 title = {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showEditCredentialsDialog = true }
+                            .padding(vertical = 2.dp, horizontal = 4.dp)
+                    ) {
                         Text(
                             text = user.name,
                             style = MaterialTheme.typography.titleMedium,
@@ -245,9 +261,11 @@ fun FarmerDashboardScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Farmer ID: ${profile?.farmerIdNumber ?: "-"}",
+                            text = "ID: ${profile?.farmerIdNumber ?: "-"} • ${user.phone}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
@@ -256,11 +274,11 @@ fun FarmerDashboardScreen(
                         shape = RoundedCornerShape(12.dp),
                         color = HarvestGoldBg,
                         modifier = Modifier
-                            .padding(end = 4.dp)
+                            .padding(end = 2.dp)
                             .testTag("farmer_coins_badge")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
@@ -271,12 +289,22 @@ fun FarmerDashboardScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "${profile?.coins ?: 0} Coins",
+                                text = "${profile?.coins ?: 0}",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
                                 color = HarvestAmber
                             )
                         }
+                    }
+                    IconButton(
+                        onClick = { showEditCredentialsDialog = true },
+                        modifier = Modifier.testTag("farmer_edit_credentials_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ManageAccounts,
+                            contentDescription = "Edit Farmer Credentials",
+                            tint = ForestGreen
+                        )
                     }
                     IconButton(
                         onClick = onSignOut,
@@ -367,12 +395,33 @@ fun FarmerDashboardScreen(
                 )
             } else {
                 FarmerOrdersContent(
+                    user = user,
                     profile = profile,
                     orders = orders,
+                    onEditCredentials = { showEditCredentialsDialog = true },
+                    onConfirmJobDone = onConfirmJobDone,
                     onRatePilot = onRatePilot
                 )
             }
         }
+    }
+
+    if (showEditCredentialsDialog) {
+        EditFarmerCredentialsDialog(
+            initialName = user.name,
+            initialPhone = user.phone,
+            initialFarmerId = profile?.farmerIdNumber.orEmpty(),
+            onSave = { newName, newPhone, newFarmerId, onError ->
+                onUpdateCredentials(
+                    newName,
+                    newPhone,
+                    newFarmerId,
+                    { showEditCredentialsDialog = false },
+                    onError
+                )
+            },
+            onDismiss = { showEditCredentialsDialog = false }
+        )
     }
 }
 
@@ -958,6 +1007,27 @@ private fun FarmerMapBookingContent(
                         }
                     }
 
+                    // Non-cancellable booking notice
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("booking_non_cancellable_notice"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = null,
+                            tint = HarvestAmber,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "Bookings cannot be cancelled after booking & payment. Pilot payout releases only when you tap Job Done.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     // Book Spray CTA (always visible without scrolling on standard phones)
                     Button(
                         onClick = onConfirmOrder,
@@ -1086,8 +1156,11 @@ private fun MapFloatingControlButton(
 
 @Composable
 private fun FarmerOrdersContent(
+    user: UserEntity,
     profile: FarmerProfileEntity?,
     orders: List<OrderWithDetails>,
+    onEditCredentials: () -> Unit,
+    onConfirmJobDone: (String) -> Unit,
     onRatePilot: (String, Int) -> Unit
 ) {
     // 10-second live countdown ticker for Blinkit-style ETA display
@@ -1110,6 +1183,56 @@ private fun FarmerOrdersContent(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            // Farmer Credentials Quick Card
+            item {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = user.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = ForestGreen
+                            )
+                            Text(
+                                text = "${user.phone} • Farmer ID: ${profile?.farmerIdNumber ?: "-"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onEditCredentials,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("orders_edit_credentials_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ManageAccounts,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Edit")
+                        }
+                    }
+                }
+            }
+
             // Gamified Harvest Coins Summary Banner
             item {
                 Surface(
@@ -1137,7 +1260,7 @@ private fun FarmerOrdersContent(
                                 color = HarvestAmber
                             )
                             Text(
-                                text = "Earn +1 Harvest Coin on every completed spray booking. Virtual reward points for gamification only, not real money.",
+                                text = "Earn +1 Harvest Coin after tapping Job Done on a completed spray booking. Virtual reward points for gamification only.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = ForestGreen
                             )
@@ -1166,6 +1289,7 @@ private fun FarmerOrdersContent(
                     FarmerOrderCard(
                         item = item,
                         nowMs = nowMs,
+                        onConfirmJobDone = onConfirmJobDone,
                         onRatePilot = onRatePilot
                     )
                 }
@@ -1178,6 +1302,7 @@ private fun FarmerOrdersContent(
 private fun FarmerOrderCard(
     item: OrderWithDetails,
     nowMs: Long,
+    onConfirmJobDone: (String) -> Unit,
     onRatePilot: (String, Int) -> Unit
 ) {
     val status = item.statusEnum
@@ -1185,9 +1310,12 @@ private fun FarmerOrderCard(
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(
-            width = if (status == OrderStatus.ACCEPTED || status == OrderStatus.IN_PROGRESS) 1.5.dp else 1.dp,
-            color = if (status == OrderStatus.ACCEPTED || status == OrderStatus.IN_PROGRESS) ForestGreen
-            else MaterialTheme.colorScheme.outline
+            width = if (status == OrderStatus.ACCEPTED || status == OrderStatus.IN_PROGRESS || status == OrderStatus.PILOT_COMPLETED) 1.5.dp else 1.dp,
+            color = when (status) {
+                OrderStatus.PILOT_COMPLETED -> HarvestAmber
+                OrderStatus.ACCEPTED, OrderStatus.IN_PROGRESS -> ForestGreen
+                else -> MaterialTheme.colorScheme.outline
+            }
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -1207,6 +1335,7 @@ private fun FarmerOrderCard(
                     color = when (status) {
                         OrderStatus.ACCEPTED -> VerifiedTealBg
                         OrderStatus.IN_PROGRESS -> SoftSage
+                        OrderStatus.PILOT_COMPLETED -> HarvestGoldBg
                         OrderStatus.COMPLETED -> SoftSage
                         OrderStatus.PENDING -> HarvestGoldBg
                         OrderStatus.CANCELLED -> AlertRustBg
@@ -1219,6 +1348,7 @@ private fun FarmerOrderCard(
                         color = when (status) {
                             OrderStatus.ACCEPTED -> VerifiedTeal
                             OrderStatus.IN_PROGRESS -> ForestGreen
+                            OrderStatus.PILOT_COMPLETED -> HarvestAmber
                             OrderStatus.COMPLETED -> ForestGreen
                             OrderStatus.PENDING -> HarvestAmber
                             OrderStatus.CANCELLED -> AlertRust
@@ -1356,7 +1486,109 @@ private fun FarmerOrderCard(
                 }
             }
 
-            // Completed Order: +1 Coin confirmation + Pilot Rating
+            // Non-cancellable & escrow status row for active bookings (no cancel option after booking/payment)
+            if (status == OrderStatus.PENDING || status == OrderStatus.ACCEPTED || status == OrderStatus.IN_PROGRESS) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("order_non_cancellable_badge_${item.order.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = null,
+                            tint = ForestGreen,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        val escrowText = if (item.paymentMethodEnum == PaymentMethod.ONLINE) {
+                            "Booking locked (non-cancellable) • ${formatInr(item.order.pilotEarnings)} held until you tap Job Done."
+                        } else {
+                            "Booking locked (non-cancellable after confirmation)."
+                        }
+                        Text(
+                            text = escrowText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Pilot finished spraying: Farmer must click "Job Done" to release payment into pilot's wallet
+            if (status == OrderStatus.PILOT_COMPLETED) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = HarvestGoldBg,
+                    border = BorderStroke(1.dp, HarvestAmber.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("pilot_completed_confirmation_card_${item.order.id}")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.TaskAlt,
+                                contentDescription = null,
+                                tint = HarvestAmber,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Pilot Completed Spraying",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = ForestGreen
+                            )
+                        }
+                        Text(
+                            text = if (item.paymentMethodEnum == PaymentMethod.ONLINE) {
+                                "Confirm spray completion on your field. Clicking Job Done transfers ${formatInr(item.order.pilotEarnings)} into ${item.pilotName ?: "the pilot"}'s wallet."
+                            } else {
+                                "Confirm spray completion on your field and click Job Done to close this booking."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ForestGreen
+                        )
+                        Button(
+                            onClick = { onConfirmJobDone(item.order.id) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("farmer_job_done_button_${item.order.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (item.paymentMethodEnum == PaymentMethod.ONLINE) {
+                                    "Job Done • Release ${formatInr(item.order.pilotEarnings)}"
+                                } else {
+                                    "Job Done"
+                                },
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Completed Order: Wallet release + +1 Coin confirmation + Pilot Rating
             if (status == OrderStatus.COMPLETED) {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -1378,7 +1610,11 @@ private fun FarmerOrderCard(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Spray completed • +1 Harvest Coin earned",
+                                text = if (item.paymentMethodEnum == PaymentMethod.ONLINE) {
+                                    "Job Done • ${formatInr(item.order.pilotEarnings)} transferred to pilot wallet • +1 Coin"
+                                } else {
+                                    "Job Done • Spray completed • +1 Harvest Coin earned"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = ForestGreen
@@ -1423,4 +1659,122 @@ private fun FarmerOrderCard(
             }
         }
     }
+}
+
+@Composable
+private fun EditFarmerCredentialsDialog(
+    initialName: String,
+    initialPhone: String,
+    initialFarmerId: String,
+    onSave: (name: String, phone: String, farmerId: String, onError: (String) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by rememberSaveable(initialName) { mutableStateOf(initialName) }
+    var phone by rememberSaveable(initialPhone) { mutableStateOf(initialPhone) }
+    var farmerId by rememberSaveable(initialFarmerId) { mutableStateOf(initialFarmerId) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.ManageAccounts,
+                    contentDescription = null,
+                    tint = ForestGreen
+                )
+                Text(
+                    text = "Update Farmer Credentials",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        errorMessage = null
+                    },
+                    label = { Text("Farmer Full Name") },
+                    leadingIcon = { Icon(Icons.Rounded.Person, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("edit_farmer_name_input")
+                )
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = {
+                        if (it.length <= 15) {
+                            phone = it
+                            errorMessage = null
+                        }
+                    },
+                    label = { Text("Mobile Number") },
+                    leadingIcon = { Icon(Icons.Rounded.Phone, contentDescription = null) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("edit_farmer_phone_input")
+                )
+                OutlinedTextField(
+                    value = farmerId,
+                    onValueChange = {
+                        farmerId = it
+                        errorMessage = null
+                    },
+                    label = { Text("Farmer ID Number") },
+                    leadingIcon = { Icon(Icons.Rounded.Badge, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("edit_farmer_id_input")
+                )
+                val err = errorMessage
+                if (!err.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = AlertRustBg,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AlertRust,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(name, phone, farmerId) { err -> errorMessage = err } },
+                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("save_farmer_credentials_button")
+            ) {
+                Text("Save Changes")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.height(48.dp)
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
 }

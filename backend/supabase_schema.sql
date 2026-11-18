@@ -46,7 +46,7 @@ create table if not exists public.orders (
     pilot_earnings double precision not null,
     payment_method text not null check (payment_method in ('online', 'cash')),
     payment_status text not null check (payment_status in ('pending', 'paid')),
-    order_status text not null check (order_status in ('pending', 'accepted', 'in_progress', 'completed', 'cancelled')),
+    order_status text not null check (order_status in ('pending', 'accepted', 'in_progress', 'pilot_completed', 'completed', 'cancelled')),
     pilot_eta_minutes integer not null default 15,
     initial_eta_minutes integer not null default 15,
     distance_km double precision,

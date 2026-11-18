@@ -45,6 +45,7 @@ enum class OrderStatus(val apiValue: String, val displayLabel: String) {
     PENDING("pending", "Finding Priority Pilot"),
     ACCEPTED("accepted", "Pilot En Route"),
     IN_PROGRESS("in_progress", "Spraying In Progress"),
+    PILOT_COMPLETED("pilot_completed", "Spraying Done • Confirm Job"),
     COMPLETED("completed", "Spray Completed"),
     CANCELLED("cancelled", "Cancelled");
 

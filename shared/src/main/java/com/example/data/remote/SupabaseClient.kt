@@ -80,6 +80,23 @@ data class SupabaseOrderRatingPatchDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class SupabaseOrderStatusPatchDto(
+    val order_status: String,
+    val payment_status: String,
+    val pilot_eta_minutes: Int
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabasePilotWalletPatchDto(
+    val wallet_balance: Double
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseFarmerCoinsPatchDto(
+    val coins: Int
+)
+
+@JsonClass(generateAdapter = true)
 data class SupabaseFarmBoundaryDto(
     val id: String,
     val farmer_id: String,
@@ -155,6 +172,27 @@ interface SupabasePostgrestApi {
         @Query("id") orderIdFilter: String,
         @Body body: SupabaseOrderRatingPatchDto
     ): Response<List<SupabaseOrderDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/orders")
+    suspend fun patchOrderStatus(
+        @Query("id") orderIdFilter: String,
+        @Body body: SupabaseOrderStatusPatchDto
+    ): Response<List<SupabaseOrderDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pilot_profiles")
+    suspend fun patchPilotWallet(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabasePilotWalletPatchDto
+    ): Response<List<SupabasePilotProfileDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/farmer_profiles")
+    suspend fun patchFarmerCoins(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabaseFarmerCoinsPatchDto
+    ): Response<List<SupabaseFarmerProfileDto>>
 
     // --- Farm Boundaries ---
     @Headers("Prefer: resolution=merge-duplicates,return=representation")
