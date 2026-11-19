@@ -20,10 +20,8 @@ from .services import (
     calculate_tariff_split,
     complete_order_atomic,
     compute_pilot_priority_score,
+    confirm_job_done_atomic,
     create_razorpay_order,
-    create_razorpay_payment_link,
-    farmer_confirm_job_done_atomic,
-    verify_razorpay_payment_link_signature,
 )
 
 
@@ -150,51 +148,55 @@ def farmer_orders(request):
     return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
 
-@api_view(["PATCH"])
-def update_farmer_profile(request):
+@api_view(["POST", "PUT"])
+def update_farmer_credentials(request):
     if request.user.role != "farmer":
         return Response({"detail": "Farmer access required."}, status=status.HTTP_403_FORBIDDEN)
     name = request.data.get("name", "").strip()
     phone = request.data.get("phone", "").strip()
     farmer_id_number = request.data.get("farmer_id_number", "").strip().upper()
-    if not name or len(phone) < 10 or not farmer_id_number:
-        return Response({"detail": "Valid name, mobile number, and Farmer ID are required."}, status=400)
+
+    if not name:
+        return Response({"detail": "Full name cannot be blank."}, status=400)
+    if len(phone) < 10:
+        return Response({"detail": "Enter a valid 10-digit mobile number."}, status=400)
+    if not farmer_id_number:
+        return Response({"detail": "Farmer ID cannot be blank."}, status=400)
+
     if CustomUser.objects.filter(phone=phone).exclude(pk=request.user.pk).exists():
-        return Response({"detail": "Mobile number already registered."}, status=400)
+        return Response({"detail": "Mobile number is already registered to another user."}, status=400)
 
     with transaction.atomic():
         request.user.name = name
         request.user.phone = phone
         request.user.save(update_fields=["name", "phone"])
-        profile = request.user.farmer_profile
-        profile.farmer_id_number = farmer_id_number
-        profile.save(update_fields=["farmer_id_number"])
-        token, _ = Token.objects.get_or_create(user=request.user)
-    return Response(
-        {
-            "user_id": str(request.user.id),
-            "name": request.user.name,
-            "phone": request.user.phone,
-            "role": request.user.role,
-            "token": token.key,
-        }
-    )
+
+        farmer = request.user.farmer_profile
+        farmer.farmer_id_number = farmer_id_number
+        farmer.save(update_fields=["farmer_id_number"])
+
+    return Response({
+        "success": True,
+        "name": request.user.name,
+        "phone": request.user.phone,
+        "farmer_id_number": farmer.farmer_id_number,
+    })
 
 
 @api_view(["POST"])
 def confirm_job_done(request, order_id):
     if request.user.role != "farmer":
         return Response({"detail": "Farmer access required."}, status=status.HTTP_403_FORBIDDEN)
-    ok, msg, order = farmer_confirm_job_done_atomic(order_id, request.user.farmer_profile)
+    ok, msg, order = confirm_job_done_atomic(order_id, request.user.farmer_profile.pk)
     if not ok:
         return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
     return Response(OrderSerializer(order).data)
 
 
 @api_view(["POST"])
-def cancel_order(request, order_id):
+def cancel_farmer_order(request, order_id):
     return Response(
-        {"detail": "Confirmed bookings cannot be cancelled after booking and payment."},
+        {"detail": "Service bookings cannot be cancelled after booking and payment."},
         status=status.HTTP_400_BAD_REQUEST,
     )
 
@@ -328,70 +330,3 @@ def verify_pilot_license(request, pilot_id):
     pilot.is_license_verified = bool(request.data.get("verified", True))
     pilot.save(update_fields=["is_license_verified"])
     return Response({"success": True, "is_license_verified": pilot.is_license_verified})
-
-
-@api_view(["POST"])
-@permission_classes([permissions.AllowAny])
-def create_razorpay_checkout_session(request):
-    try:
-        amount_inr = Decimal(str(request.data.get("amount_inr", "0")))
-    except Exception:
-        return Response({"detail": "Invalid amount_inr."}, status=status.HTTP_400_BAD_REQUEST)
-    if amount_inr <= Decimal("0.00"):
-        return Response({"detail": "amount_inr must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
-
-    description = str(request.data.get("description", "Krishivantri Drone Spray Booking"))
-    customer_name = str(request.data.get("customer_name", "Krishivantri Farmer"))
-    customer_phone = str(request.data.get("customer_phone", "+919999999999"))
-    reference_id = str(request.data.get("reference_id", "kv_booking"))
-    callback_url = str(request.data.get("callback_url", "https://krishivantri.in/razorpay-callback"))
-
-    try:
-        link = create_razorpay_payment_link(
-            amount_inr=amount_inr,
-            description=description,
-            customer_name=customer_name,
-            customer_phone=customer_phone,
-            reference_id=reference_id,
-            callback_url=callback_url,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-    return Response(
-        {
-            "payment_link_id": link.get("id", ""),
-            "checkout_url": link.get("short_url", ""),
-            "callback_url": callback_url,
-            "reference_id": link.get("reference_id", reference_id),
-        }
-    )
-
-
-@api_view(["POST"])
-@permission_classes([permissions.AllowAny])
-def verify_razorpay_payment(request):
-    payment_id = str(request.data.get("razorpay_payment_id", "")).strip()
-    payment_link_id = str(request.data.get("razorpay_payment_link_id", "")).strip()
-    reference_id = str(request.data.get("razorpay_payment_link_reference_id", "")).strip()
-    status_value = str(request.data.get("razorpay_payment_link_status", "")).strip()
-    signature = str(request.data.get("razorpay_signature", "")).strip()
-
-    if not payment_id or not payment_link_id or not signature:
-        return Response(
-            {"verified": False, "detail": "Missing Razorpay payment callback parameters."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
-        verify_razorpay_payment_link_signature(
-            payment_id=payment_id,
-            payment_link_id=payment_link_id,
-            reference_id=reference_id,
-            status_value=status_value,
-            signature=signature,
-        )
-    except Exception as exc:
-        return Response({"verified": False, "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({"verified": True, "payment_id": payment_id})

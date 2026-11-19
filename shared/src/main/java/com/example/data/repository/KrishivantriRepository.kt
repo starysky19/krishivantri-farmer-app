@@ -22,12 +22,14 @@ import com.example.data.model.UserRole
 import com.example.data.remote.SupabaseClient
 import com.example.data.remote.SupabaseCoordDto
 import com.example.data.remote.SupabaseFarmerCoinsPatchDto
+import com.example.data.remote.SupabaseFarmerIdPatchDto
 import com.example.data.remote.SupabaseFarmerProfileDto
 import com.example.data.remote.SupabaseOrderDto
 import com.example.data.remote.SupabaseOrderRatingPatchDto
 import com.example.data.remote.SupabaseOrderStatusPatchDto
 import com.example.data.remote.SupabasePilotWalletPatchDto
 import com.example.data.remote.SupabaseUserDto
+import com.example.data.remote.SupabaseUserPatchDto
 import com.example.domain.GeoPolygonCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -54,13 +56,13 @@ sealed class AcceptOrderResult {
 }
 
 sealed class CancelOrderResult {
+    data object Success : CancelOrderResult()
     data class NotAllowed(val message: String) : CancelOrderResult()
-    data class Error(val message: String) : CancelOrderResult()
 }
 
 sealed class JobDoneResult {
     data class Success(
-        val transferredAmount: Double,
+        val amountTransferredToPilot: Double,
         val pilotName: String?
     ) : JobDoneResult()
     data class Error(val message: String) : JobDoneResult()
@@ -239,72 +241,87 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         val cleanName = name.trim()
         val cleanPhone = phone.trim()
         val cleanFarmerId = farmerIdNumber.trim().uppercase(Locale.getDefault())
+
         if (cleanName.isBlank()) {
-            return AuthResult.Error("Enter your full name.")
+            return AuthResult.Error("Farmer name cannot be empty.")
         }
         if (cleanPhone.length < 10) {
             return AuthResult.Error("Enter a valid 10-digit mobile number.")
         }
         if (cleanFarmerId.isBlank()) {
-            return AuthResult.Error("Enter your Farmer ID number.")
+            return AuthResult.Error("Farmer ID number cannot be empty.")
         }
 
-        val txResult = database.withTransaction {
-            val existingUser = dao.getUserById(userId)
-                ?: return@withTransaction AuthResult.Error("Farmer account not found.")
-            val phoneOwner = dao.getUserByPhone(cleanPhone)
-            if (phoneOwner != null && phoneOwner.id != userId) {
-                return@withTransaction AuthResult.Error("Mobile number is already registered to another account.")
-            }
+        val existingLocal = dao.getUserByPhone(cleanPhone)
+        if (existingLocal != null && existingLocal.id != userId) {
+            return AuthResult.Error("This mobile number is already registered to another account.")
+        }
 
-            val updatedUser = existingUser.copy(
+        val remoteConflict = withContext(Dispatchers.IO) {
+            runCatching {
+                val api = SupabaseClient.api ?: return@runCatching false
+                val matches = api.getUsersByPhone("eq.$cleanPhone").body().orEmpty()
+                matches.any { it.id != userId }
+            }.getOrDefault(false)
+        }
+        if (remoteConflict) {
+            return AuthResult.Error("This mobile number is already registered on another account.")
+        }
+
+        val updatedUser: UserEntity
+        val updatedProfile: FarmerProfileEntity
+        database.withTransaction {
+            val currentUser = dao.getUserById(userId)
+                ?: throw IllegalStateException("Farmer account not found.")
+            val currentProfile = dao.getFarmerProfile(userId)
+            updatedUser = currentUser.copy(
                 name = cleanName,
                 phone = cleanPhone
             )
+            updatedProfile = FarmerProfileEntity(
+                userId = userId,
+                farmerIdNumber = cleanFarmerId,
+                coins = currentProfile?.coins ?: 0
+            )
             dao.insertUser(updatedUser)
-
-            val existingProfile = dao.getFarmerProfile(userId)
-            val updatedProfile = if (existingProfile != null) {
-                existingProfile.copy(farmerIdNumber = cleanFarmerId)
-            } else {
-                FarmerProfileEntity(
-                    userId = userId,
-                    farmerIdNumber = cleanFarmerId,
-                    coins = 0
-                )
-            }
             dao.insertFarmerProfile(updatedProfile)
-            AuthResult.Success(updatedUser)
         }
 
-        if (txResult is AuthResult.Success) {
-            val updatedProfile = dao.getFarmerProfile(userId)
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    SupabaseClient.api?.let { api ->
+        withContext(Dispatchers.IO) {
+            runCatching {
+                SupabaseClient.api?.let { api ->
+                    val patchUserResp = api.patchUserCredentials(
+                        idFilter = "eq.$userId",
+                        body = SupabaseUserPatchDto(name = updatedUser.name, phone = updatedUser.phone)
+                    )
+                    if (!patchUserResp.isSuccessful || patchUserResp.body().isNullOrEmpty()) {
                         api.upsertUser(
                             SupabaseUserDto(
-                                id = txResult.user.id,
-                                phone = txResult.user.phone,
-                                name = txResult.user.name,
-                                role = txResult.user.role,
-                                created_at = txResult.user.createdAt
+                                id = updatedUser.id,
+                                phone = updatedUser.phone,
+                                name = updatedUser.name,
+                                role = updatedUser.role,
+                                created_at = updatedUser.createdAt
                             )
                         )
-                        if (updatedProfile != null) {
-                            api.upsertFarmerProfile(
-                                SupabaseFarmerProfileDto(
-                                    user_id = updatedProfile.userId,
-                                    farmer_id_number = updatedProfile.farmerIdNumber,
-                                    coins = updatedProfile.coins
-                                )
+                    }
+                    val patchProfResp = api.patchFarmerIdNumber(
+                        userIdFilter = "eq.$userId",
+                        body = SupabaseFarmerIdPatchDto(farmer_id_number = updatedProfile.farmerIdNumber)
+                    )
+                    if (!patchProfResp.isSuccessful || patchProfResp.body().isNullOrEmpty()) {
+                        api.upsertFarmerProfile(
+                            SupabaseFarmerProfileDto(
+                                user_id = updatedProfile.userId,
+                                farmer_id_number = updatedProfile.farmerIdNumber,
+                                coins = updatedProfile.coins
                             )
-                        }
+                        )
                     }
                 }
             }
         }
-        return txResult
+        return AuthResult.Success(updatedUser)
     }
 
     fun observeFarmerProfile(farmerId: String): Flow<FarmerProfileEntity?> =
@@ -523,6 +540,19 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         runCatching {
             val orders = api.getOrdersForFarmer("eq.$farmerId").body().orEmpty()
             orders.forEach { dto ->
+                val localExisting = dao.getOrderById(dto.id)
+                // Protect locally completed + wallet-credited orders or local awaiting_confirmation state from stale cloud status
+                if (localExisting != null && localExisting.orderStatus == OrderStatus.COMPLETED.apiValue) {
+                    return@forEach
+                }
+                val resolvedStatus = if (
+                    localExisting?.orderStatus == OrderStatus.AWAITING_CONFIRMATION.apiValue &&
+                    dto.order_status == OrderStatus.IN_PROGRESS.apiValue
+                ) {
+                    OrderStatus.AWAITING_CONFIRMATION.apiValue
+                } else {
+                    dto.order_status
+                }
                 val poly = dto.field_polygon_coordinates.map { LatLngPoint(it.lat, it.lng) }
                 dao.insertOrder(
                     OrderEntity(
@@ -537,7 +567,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                         pilotEarnings = dto.pilot_earnings,
                         paymentMethod = dto.payment_method,
                         paymentStatus = dto.payment_status,
-                        orderStatus = dto.order_status,
+                        orderStatus = resolvedStatus,
                         pilotEtaMinutes = dto.pilot_eta_minutes,
                         initialEtaMinutes = dto.initial_eta_minutes,
                         distanceKm = dto.distance_km,
@@ -546,6 +576,8 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                         acceptedAt = dto.accepted_at,
                         pilotRating = dto.pilot_rating,
                         razorpayPaymentId = dto.razorpay_payment_id,
+                        pilotWalletCredited = localExisting?.pilotWalletCredited
+                            ?: (resolvedStatus == OrderStatus.COMPLETED.apiValue),
                         createdAt = dto.created_at
                     )
                 )
@@ -743,153 +775,215 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
     }
 
     /**
-     * Bookings are final and non-cancellable once booked and paid.
+     * Bookings are non-cancellable once placed and paid.
      */
-    suspend fun cancelOrder(orderId: String): CancelOrderResult {
+    suspend fun cancelOrderByFarmer(orderId: String): CancelOrderResult {
         val order = dao.getOrderById(orderId)
-            ?: return CancelOrderResult.Error("Booking not found.")
+            ?: return CancelOrderResult.NotAllowed("Order not found.")
         return CancelOrderResult.NotAllowed(
-            "Confirmed bookings cannot be cancelled after booking and payment."
+            if (order.paymentStatus == PaymentStatus.PAID.apiValue) {
+                "Service bookings cannot be cancelled after booking and payment."
+            } else {
+                "Active spray bookings cannot be cancelled once placed."
+            }
         )
     }
 
     /**
-     * Pilot marks spraying complete.
-     * Moves order to PILOT_COMPLETED and holds payout until the farmer clicks "Job Done".
+     * Pilot finishes spraying -> sets order status to 'awaiting_confirmation'.
+     * Does NOT transfer funds to the pilot's wallet yet; funds stay held until the Farmer clicks "Job Done".
      */
-    suspend fun completeOrder(orderId: String) {
-        var updatedPaymentStatus: String? = null
-        database.withTransaction {
-            val order = dao.getOrderById(orderId) ?: return@withTransaction
-            if (
-                order.orderStatus == OrderStatus.COMPLETED.apiValue ||
-                order.orderStatus == OrderStatus.PILOT_COMPLETED.apiValue
+    suspend fun markPilotSprayingCompleted(orderId: String) {
+        val updated = database.withTransaction {
+            val order = dao.getOrderById(orderId) ?: return@withTransaction false
+            if (order.orderStatus == OrderStatus.COMPLETED.apiValue ||
+                order.orderStatus == OrderStatus.AWAITING_CONFIRMATION.apiValue
             ) {
-                return@withTransaction
+                return@withTransaction false
             }
-
             dao.updateOrder(
                 order.copy(
-                    orderStatus = OrderStatus.PILOT_COMPLETED.apiValue,
+                    orderStatus = OrderStatus.AWAITING_CONFIRMATION.apiValue,
                     pilotEtaMinutes = 0
                 )
             )
-            updatedPaymentStatus = order.paymentStatus
+            true
         }
-        val paymentStatus = updatedPaymentStatus ?: return
-        withContext(Dispatchers.IO) {
-            runCatching {
-                SupabaseClient.api?.patchOrderStatus(
-                    orderIdFilter = "eq.$orderId",
-                    body = SupabaseOrderStatusPatchDto(
-                        order_status = OrderStatus.PILOT_COMPLETED.apiValue,
-                        payment_status = paymentStatus,
-                        pilot_eta_minutes = 0
+        if (updated) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    SupabaseClient.api?.patchOrderStatus(
+                        orderIdFilter = "eq.$orderId",
+                        body = SupabaseOrderStatusPatchDto(
+                            order_status = OrderStatus.AWAITING_CONFIRMATION.apiValue,
+                            pilot_eta_minutes = 0
+                        )
                     )
-                )
+                }
             }
         }
     }
 
     /**
-     * Farmer confirms "Job Done" after pilot completes spraying:
-     * - Marks order_status = 'completed' and payment_status = 'paid'
-     * - Transfers pilotEarnings (90%) into the pilot's wallet (for paid online orders)
-     * - Logs 10% platform commission for Online orders
-     * - Awards +1 Harvest Coin to the Farmer
+     * Pilot-side completion hook: marks spraying finished and waits for Farmer "Job Done"
+     * confirmation before releasing payout into pilot's wallet.
      */
-    suspend fun confirmJobDoneByFarmer(orderId: String, farmerId: String): JobDoneResult {
-        var settledPilotId: String? = null
-        var updatedPilotBalance: Double? = null
+    suspend fun completeOrder(orderId: String) {
+        markPilotSprayingCompleted(orderId)
+    }
+
+    /**
+     * Farmer clicks "Job Done":
+     * - Marks order_status = 'completed', payment_status = 'paid', pilotWalletCredited = true
+     * - Transfers pilot's net payout (order.pilotEarnings) to pilot's walletBalance for online-paid orders
+     * - Awards +1 Harvest Coin to the Farmer
+     * - Logs 10% platform commission for Online orders
+     */
+    suspend fun confirmJobDoneByFarmer(orderId: String): JobDoneResult {
+        val preOrder = dao.getOrderById(orderId)
+            ?: return JobDoneResult.Error("Order not found.")
+        val prePilotId = preOrder.assignedPilotId
+            ?: return JobDoneResult.Error("No pilot is assigned to this booking yet.")
+
+        // Pull latest pilot profile from Supabase if configured so wallet balance starts up to date
+        withContext(Dispatchers.IO) {
+            runCatching {
+                SupabaseClient.api?.getPilotProfile("eq.$prePilotId")?.body()?.firstOrNull()?.let { pp ->
+                    val existingLocal = dao.getPilotProfile(prePilotId)
+                    if (existingLocal == null) {
+                        dao.insertPilotProfile(
+                            PilotProfileEntity(
+                                userId = pp.user_id,
+                                droneType = pp.drone_type,
+                                tankCapacity = pp.tank_capacity,
+                                licenseDocumentUri = pp.license_document_uri,
+                                isLicenseVerified = pp.is_license_verified,
+                                bankUpiId = pp.bank_upi_id,
+                                walletBalance = pp.wallet_balance,
+                                isOnline = pp.is_online,
+                                ratingAverage = pp.rating_average,
+                                ratingCount = pp.rating_count,
+                                currentLat = pp.current_lat,
+                                currentLng = pp.current_lng,
+                                locationUpdatedAt = pp.location_updated_at
+                            )
+                        )
+                    } else if (pp.wallet_balance > existingLocal.walletBalance) {
+                        dao.updatePilotProfile(existingLocal.copy(walletBalance = pp.wallet_balance))
+                    }
+                }
+            }
+        }
+
+        var farmerIdToSync: String? = null
         var updatedFarmerCoins: Int? = null
+        var pilotIdToSync: String? = null
+        var updatedPilotWallet: Double? = null
+        var transferredAmount = 0.0
+        var pilotDisplayName: String? = null
 
         val result = database.withTransaction {
             val order = dao.getOrderById(orderId)
-                ?: return@withTransaction JobDoneResult.Error("Booking not found.")
-            if (order.farmerId != farmerId) {
-                return@withTransaction JobDoneResult.Error("Only the booking farmer can confirm Job Done.")
+                ?: return@withTransaction JobDoneResult.Error("Order not found.")
+            if (order.orderStatus == OrderStatus.COMPLETED.apiValue && order.pilotWalletCredited) {
+                return@withTransaction JobDoneResult.Error("Job already confirmed and payout transferred.")
             }
-            if (order.orderStatus == OrderStatus.COMPLETED.apiValue) {
-                return@withTransaction JobDoneResult.Error("Job Done has already been confirmed for this booking.")
+            val pilotId = order.assignedPilotId
+                ?: return@withTransaction JobDoneResult.Error("No pilot is assigned to this booking yet.")
+            if (order.orderStatus !in setOf(
+                    OrderStatus.AWAITING_CONFIRMATION.apiValue,
+                    OrderStatus.IN_PROGRESS.apiValue
+                )
+            ) {
+                return@withTransaction JobDoneResult.Error(
+                    "Pilot must complete spraying before you can click Job Done."
+                )
             }
-            if (order.orderStatus != OrderStatus.PILOT_COMPLETED.apiValue) {
-                return@withTransaction JobDoneResult.Error("Pilot must complete spraying before you can confirm Job Done.")
+
+            val isOnlineEscrow = order.paymentMethod == PaymentMethod.ONLINE.apiValue
+            val amountToCredit = if (isOnlineEscrow && !order.pilotWalletCredited) {
+                order.pilotEarnings
+            } else {
+                0.0
             }
 
             dao.updateOrder(
                 order.copy(
                     orderStatus = OrderStatus.COMPLETED.apiValue,
                     paymentStatus = PaymentStatus.PAID.apiValue,
-                    pilotEtaMinutes = 0
+                    pilotEtaMinutes = 0,
+                    pilotWalletCredited = true
                 )
             )
+
+            pilotDisplayName = dao.getUserById(pilotId)?.name
+            val pilot = dao.getPilotProfile(pilotId)
+            if (pilot != null && amountToCredit > 0.0) {
+                val newWallet = ((pilot.walletBalance + amountToCredit) * 100.0).roundToInt() / 100.0
+                dao.updatePilotProfile(pilot.copy(walletBalance = newWallet))
+                pilotIdToSync = pilotId
+                updatedPilotWallet = newWallet
+            }
+            transferredAmount = amountToCredit
 
             val farmer = dao.getFarmerProfile(order.farmerId)
             if (farmer != null) {
                 val nextCoins = farmer.coins + 1
                 dao.updateFarmerProfile(farmer.copy(coins = nextCoins))
+                farmerIdToSync = order.farmerId
                 updatedFarmerCoins = nextCoins
             }
 
-            var transferredAmount = 0.0
-            val pilotId = order.assignedPilotId
-            val pilotUser = pilotId?.let { dao.getUserById(it) }
-            if (pilotId != null && order.paymentMethod == PaymentMethod.ONLINE.apiValue) {
-                val pilotProfile = dao.getPilotProfile(pilotId)
-                if (pilotProfile != null) {
-                    val newBalance = ((pilotProfile.walletBalance + order.pilotEarnings) * 100.0).roundToInt() / 100.0
-                    dao.updatePilotProfile(pilotProfile.copy(walletBalance = newBalance))
-                    settledPilotId = pilotId
-                    updatedPilotBalance = newBalance
-                    transferredAmount = order.pilotEarnings
-                }
+            if (isOnlineEscrow) {
                 dao.insertCommissionLog(
                     CommissionLogEntity(
                         orderId = order.id,
                         pilotId = pilotId,
                         amount = order.adminCommission,
                         paymentMethod = order.paymentMethod,
-                        note = "10% Online Razorpay Commission settled on farmer Job Done"
+                        note = "10% Online Commission settled & ${order.pilotEarnings} released to pilot wallet on Farmer Job Done"
                     )
                 )
             }
 
             JobDoneResult.Success(
-                transferredAmount = transferredAmount,
-                pilotName = pilotUser?.name
+                amountTransferredToPilot = transferredAmount,
+                pilotName = pilotDisplayName
             )
         }
 
         if (result is JobDoneResult.Success) {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    SupabaseClient.api?.let { api ->
-                        api.patchOrderStatus(
-                            orderIdFilter = "eq.$orderId",
-                            body = SupabaseOrderStatusPatchDto(
-                                order_status = OrderStatus.COMPLETED.apiValue,
-                                payment_status = PaymentStatus.PAID.apiValue,
-                                pilot_eta_minutes = 0
-                            )
+                    val api = SupabaseClient.api ?: return@runCatching
+                    api.patchOrderStatus(
+                        orderIdFilter = "eq.$orderId",
+                        body = SupabaseOrderStatusPatchDto(
+                            order_status = OrderStatus.COMPLETED.apiValue,
+                            payment_status = PaymentStatus.PAID.apiValue,
+                            pilot_eta_minutes = 0
                         )
-                        updatedFarmerCoins?.let { coins ->
-                            api.patchFarmerCoins(
-                                userIdFilter = "eq.$farmerId",
-                                body = SupabaseFarmerCoinsPatchDto(coins = coins)
-                            )
-                        }
-                        val pid = settledPilotId
-                        val bal = updatedPilotBalance
-                        if (pid != null && bal != null) {
-                            api.patchPilotWallet(
-                                userIdFilter = "eq.$pid",
-                                body = SupabasePilotWalletPatchDto(wallet_balance = bal)
-                            )
-                        }
+                    )
+                    val pId = pilotIdToSync
+                    val pWallet = updatedPilotWallet
+                    if (pId != null && pWallet != null) {
+                        api.patchPilotWalletBalance(
+                            userIdFilter = "eq.$pId",
+                            body = SupabasePilotWalletPatchDto(wallet_balance = pWallet)
+                        )
+                    }
+                    val fId = farmerIdToSync
+                    val fCoins = updatedFarmerCoins
+                    if (fId != null && fCoins != null) {
+                        api.patchFarmerCoins(
+                            userIdFilter = "eq.$fId",
+                            body = SupabaseFarmerCoinsPatchDto(coins = fCoins)
+                        )
                     }
                 }
             }
         }
+
         return result
     }
 
@@ -982,5 +1076,44 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
     suspend fun setPilotLicenseVerified(pilotId: String, verified: Boolean) {
         val profile = dao.getPilotProfile(pilotId) ?: return
         dao.updatePilotProfile(profile.copy(isLicenseVerified = verified))
+    }
+
+    suspend fun updatePilotAccountDetails(
+        pilotId: String,
+        name: String,
+        droneType: DroneType,
+        tankCapacity: Double,
+        bankUpiId: String,
+        licenseDocumentUri: String? = null
+    ): AuthResult {
+        val cleanName = name.trim()
+        val cleanUpi = bankUpiId.trim()
+        if (cleanName.isBlank()) {
+            return AuthResult.Error("Pilot name cannot be empty.")
+        }
+        if (cleanUpi.isBlank()) {
+            return AuthResult.Error("UPI ID cannot be empty.")
+        }
+        if (tankCapacity <= 0.0) {
+            return AuthResult.Error("Tank capacity must be positive.")
+        }
+
+        val updatedUser: UserEntity
+        database.withTransaction {
+            val user = dao.getUserById(pilotId)
+                ?: throw IllegalStateException("Pilot user not found.")
+            val profile = dao.getPilotProfile(pilotId)
+                ?: throw IllegalStateException("Pilot profile not found.")
+            updatedUser = user.copy(name = cleanName)
+            val updatedProfile = profile.copy(
+                droneType = droneType.apiValue,
+                tankCapacity = tankCapacity,
+                bankUpiId = cleanUpi,
+                licenseDocumentUri = licenseDocumentUri ?: profile.licenseDocumentUri
+            )
+            dao.insertUser(updatedUser)
+            dao.updatePilotProfile(updatedProfile)
+        }
+        return AuthResult.Success(updatedUser)
     }
 }

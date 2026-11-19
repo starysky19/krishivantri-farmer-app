@@ -21,7 +21,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.UserRole
 import com.example.data.remote.KrishivantriRuntimeConfig
 import com.example.ui.components.RazorpayCheckoutSheet
-import com.example.ui.components.RazorpayHostedCheckoutDialog
 import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.FarmerDashboardScreen
@@ -41,36 +40,21 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val resolvedSupabaseUrl = listOf(
-            BuildConfig.NEXT_PUBLIC_SUPABASE_URL,
-            BuildConfig.SUPABASE_URL
-        ).firstOrNull { it.isNotBlank() && !it.contains("your-project") }
-            ?: BuildConfig.SUPABASE_URL
-
-        val resolvedSupabaseAnonKey = listOf(
-            BuildConfig.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-            BuildConfig.SUPABASE_ANON_KEY
-        ).firstOrNull { it.isNotBlank() && !it.startsWith("MY_SUPABASE") }
-            ?: BuildConfig.SUPABASE_ANON_KEY
-
         KrishivantriRuntimeConfig.configure(
             apiBaseUrl = BuildConfig.API_BASE_URL,
-            supabaseUrl = resolvedSupabaseUrl,
-            supabaseAnonKey = resolvedSupabaseAnonKey,
+            supabaseUrl = BuildConfig.SUPABASE_URL,
+            supabaseAnonKey = BuildConfig.SUPABASE_ANON_KEY,
             razorpayKeyId = BuildConfig.RAZORPAY_KEY_ID,
             satelliteTileUrl = BuildConfig.SATELLITE_TILE_URL,
             satelliteApiKey = BuildConfig.SATELLITE_API_KEY
         )
-        if (KrishivantriRuntimeConfig.isRazorpayConfigured()) {
-            runCatching { Checkout.preload(applicationContext) }
-        }
         runCatching { MapLibre.getInstance(applicationContext) }
         enableEdgeToEdge()
         setContent {
             KrishivantriTheme {
                 KrishivantriApp(
                     viewModel = viewModel,
-                    onLaunchRazorpaySdk = ::launchRazorpayCheckout
+                    onLaunchRazorpay = ::launchRazorpayCheckout
                 )
             }
         }
@@ -78,17 +62,16 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
 
     private fun launchRazorpayCheckout(sheet: RazorpaySheetState) {
         if (!KrishivantriRuntimeConfig.isRazorpayConfigured()) {
-            viewModel.onRazorpayPaymentError(-1, "RAZORPAY_KEY_ID is not configured in AI Studio Secrets.")
+            viewModel.onRazorpayKeyMissing()
             return
         }
         runCatching {
             val checkout = Checkout()
             checkout.setKeyID(KrishivantriRuntimeConfig.razorpayKeyId.trim())
-            checkout.setImage(R.mipmap.ic_launcher)
 
             val options = JSONObject().apply {
                 put("name", "Krishivantri")
-                put("description", sheet.subtitle.take(200))
+                put("description", sheet.subtitle)
                 put("currency", "INR")
                 put("amount", (sheet.amount * 100.0).roundToInt().coerceAtLeast(100))
                 put("theme", JSONObject().put("color", "#1B4332"))
@@ -100,11 +83,8 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 put("retry", retryObj)
 
                 val prefill = JSONObject()
-                val rawPhone = viewModel.currentUser.value?.phone.orEmpty()
-                val digits = rawPhone.filter { it.isDigit() }
-                if (digits.length >= 10) {
-                    val contact = if (digits.length == 10) "+91$digits" else "+$digits"
-                    prefill.put("contact", contact)
+                viewModel.currentUser.value?.phone?.takeIf { it.isNotBlank() }?.let {
+                    prefill.put("contact", it)
                 }
                 put("prefill", prefill)
             }
@@ -119,26 +99,14 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
     }
 
     override fun onPaymentError(code: Int, response: String?, paymentData: PaymentData?) {
-        val readable = parseRazorpayErrorDescription(response)
-        viewModel.onRazorpayPaymentError(code, readable)
-    }
-
-    private fun parseRazorpayErrorDescription(raw: String?): String? {
-        val text = raw?.trim().orEmpty()
-        if (text.isEmpty()) return null
-        return runCatching {
-            val obj = JSONObject(text)
-            obj.optJSONObject("error")?.optString("description")?.takeIf { it.isNotBlank() }
-                ?: obj.optString("description").takeIf { it.isNotBlank() }
-                ?: text
-        }.getOrDefault(text)
+        viewModel.onRazorpayPaymentError(code, response)
     }
 }
 
 @Composable
 fun KrishivantriApp(
     viewModel: KrishivantriViewModel,
-    onLaunchRazorpaySdk: (RazorpaySheetState) -> Unit
+    onLaunchRazorpay: (RazorpaySheetState) -> Unit
 ) {
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
@@ -150,7 +118,6 @@ fun KrishivantriApp(
     val realtimeOperators by viewModel.realtimeOperators.collectAsStateWithLifecycle()
     val adminOverview by viewModel.adminOverview.collectAsStateWithLifecycle()
     val razorpaySheet by viewModel.razorpaySheet.collectAsStateWithLifecycle()
-    val hostedCheckoutSession by viewModel.hostedCheckoutSession.collectAsStateWithLifecycle()
     val snackbarMessage by viewModel.snackbarMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -226,9 +193,9 @@ fun KrishivantriApp(
                         onSelectPaymentMethod = viewModel::selectPaymentMethod,
                         onConfirmOrder = viewModel::initiateFarmerOrderPlacement,
                         onConsumeBookingSuccess = viewModel::consumeBookingSuccess,
-                        onUpdateCredentials = viewModel::updateFarmerCredentials,
-                        onConfirmJobDone = viewModel::confirmJobDone,
+                        onConfirmJobDone = viewModel::confirmFarmerJobDone,
                         onRatePilot = viewModel::ratePilot,
+                        onUpdateCredentials = viewModel::updateFarmerCredentials,
                         onSignOut = viewModel::signOut
                     )
                 }
@@ -239,16 +206,8 @@ fun KrishivantriApp(
     razorpaySheet?.let { sheet ->
         RazorpayCheckoutSheet(
             state = sheet,
-            onConfirmPayment = { viewModel.startRazorpayCheckout(onFallbackToSdk = onLaunchRazorpaySdk) },
+            onConfirmPayment = { onLaunchRazorpay(sheet) },
             onDismiss = viewModel::dismissRazorpaySheet
-        )
-    }
-
-    hostedCheckoutSession?.let { session ->
-        RazorpayHostedCheckoutDialog(
-            session = session,
-            onPaymentCallback = viewModel::verifyAndCompleteHostedCheckout,
-            onDismiss = { viewModel.dismissHostedCheckout(cancelledByUser = true) }
         )
     }
 }

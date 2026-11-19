@@ -92,7 +92,6 @@ class Order(models.Model):
         ("pending", "Pending"),
         ("accepted", "Accepted"),
         ("in_progress", "In Progress"),
-        ("pilot_completed", "Pilot Completed Spraying"),
         ("completed", "Completed"),
         ("cancelled", "Cancelled"),
     )

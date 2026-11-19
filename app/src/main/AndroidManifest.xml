@@ -31,7 +31,7 @@
 
         <activity
             android:name="com.razorpay.CheckoutActivity"
-            android:hardwareAccelerated="true"
+            android:hardwareAccelerated="false"
             tools:node="merge" />
     </application>
 

@@ -24,11 +24,8 @@ object KrishivantriRuntimeConfig {
     @Volatile
     var satelliteApiKey: String = "MY_SATELLITE_API_KEY"
 
-    private fun sanitize(value: String): String =
-        value.trim().trim('"', '\'')
-
     fun isRazorpayConfigured(): Boolean {
-        val key = sanitize(razorpayKeyId)
+        val key = razorpayKeyId.trim()
         return key.startsWith("rzp_") && !key.contains("MY_RAZORPAY") && !key.contains("placeholder")
     }
 
@@ -40,11 +37,11 @@ object KrishivantriRuntimeConfig {
         satelliteTileUrl: String = this.satelliteTileUrl,
         satelliteApiKey: String = this.satelliteApiKey
     ) {
-        this.apiBaseUrl = sanitize(apiBaseUrl)
-        this.supabaseUrl = sanitize(supabaseUrl)
-        this.supabaseAnonKey = sanitize(supabaseAnonKey)
-        this.razorpayKeyId = sanitize(razorpayKeyId)
-        this.satelliteTileUrl = sanitize(satelliteTileUrl)
-        this.satelliteApiKey = sanitize(satelliteApiKey)
+        this.apiBaseUrl = apiBaseUrl
+        this.supabaseUrl = supabaseUrl
+        this.supabaseAnonKey = supabaseAnonKey
+        this.razorpayKeyId = razorpayKeyId
+        this.satelliteTileUrl = satelliteTileUrl
+        this.satelliteApiKey = satelliteApiKey
     }
 }

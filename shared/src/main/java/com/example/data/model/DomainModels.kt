@@ -45,7 +45,7 @@ enum class OrderStatus(val apiValue: String, val displayLabel: String) {
     PENDING("pending", "Finding Priority Pilot"),
     ACCEPTED("accepted", "Pilot En Route"),
     IN_PROGRESS("in_progress", "Spraying In Progress"),
-    PILOT_COMPLETED("pilot_completed", "Spraying Done • Confirm Job"),
+    AWAITING_CONFIRMATION("awaiting_confirmation", "Spraying Done • Confirm Job Done"),
     COMPLETED("completed", "Spray Completed"),
     CANCELLED("cancelled", "Cancelled");
 
@@ -116,6 +116,7 @@ data class OrderEntity(
     val acceptedAt: Long? = null,
     val pilotRating: Int? = null,
     val razorpayPaymentId: String? = null,
+    val pilotWalletCredited: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )
 

@@ -1,14 +1,5 @@
 package com.example.ui.components
 
-import android.annotation.SuppressLint
-import android.content.Intent
-import android.net.Uri
-import android.webkit.CookieManager
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -30,26 +21,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,24 +48,21 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.LatLngPoint
-import com.example.data.remote.RazorpayGatewayClient
 import com.example.ui.theme.AlertRust
 import com.example.ui.theme.AlertRustBg
 import com.example.ui.theme.EmeraldPulse
 import com.example.ui.theme.ForestGreen
+import com.example.ui.theme.HarvestAmber
+import com.example.ui.theme.HarvestGoldBg
 import com.example.ui.theme.MintHighlight
 import com.example.ui.theme.SoftSage
-import com.example.ui.viewmodel.HostedCheckoutSession
 import com.example.ui.viewmodel.InsufficientWalletAlert
+import com.example.ui.viewmodel.RazorpayPurpose
 import com.example.ui.viewmodel.RazorpaySheetState
 import java.text.NumberFormat
 import java.util.Locale
@@ -287,7 +269,22 @@ fun RazorpayCheckoutSheet(
                 shape = RoundedCornerShape(14.dp)
             )
 
-            val isSdkKeyConfigured = com.example.data.remote.KrishivantriRuntimeConfig.isRazorpayConfigured()
+            if (state.purpose is RazorpayPurpose.FarmerOrderCheckout) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = HarvestGoldBg,
+                    border = BorderStroke(1.dp, HarvestAmber.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Non-cancellable after booking & payment. Pilot payout is released only after you click Job Done.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ForestGreen,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -298,10 +295,10 @@ fun RazorpayCheckoutSheet(
                     tint = EmeraldPulse,
                     modifier = Modifier.size(16.dp)
                 )
-                val gatewayLabel = if (isSdkKeyConfigured) {
-                    "Razorpay Checkout • Key ID from AI Studio Secrets (Secret stays server-only)"
+                val gatewayLabel = if (com.example.data.remote.KrishivantriRuntimeConfig.isRazorpayConfigured()) {
+                    "Razorpay Checkout SDK • Encrypted UPI & Cards"
                 } else {
-                    "Razorpay Server Checkout • Set RAZORPAY_KEY_ID in AI Studio Secrets or deploy Edge Function"
+                    "Set RAZORPAY_KEY_ID in AI Studio Secrets to launch live Razorpay Checkout"
                 }
                 Text(
                     text = gatewayLabel,
@@ -310,30 +307,8 @@ fun RazorpayCheckoutSheet(
                 )
             }
 
-            state.errorMessage?.let { errorMsg ->
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = AlertRustBg,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = errorMsg,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AlertRust,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
-            }
-
-            Text(
-                text = "Bookings are final and cannot be cancelled after payment. Payout is released to the pilot only after you tap Job Done.",
-                style = MaterialTheme.typography.labelSmall,
-                color = AlertRust
-            )
-
             Button(
                 onClick = onConfirmPayment,
-                enabled = !state.isCreatingSession,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp)
@@ -341,197 +316,16 @@ fun RazorpayCheckoutSheet(
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
             ) {
-                if (state.isCreatingSession) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = "Creating Secure Checkout...",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Rounded.CheckCircle,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Pay ${formatInr(state.amount)} via $selectedUpiApp",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-fun RazorpayHostedCheckoutDialog(
-    session: HostedCheckoutSession,
-    onPaymentCallback: (
-        paymentId: String,
-        paymentLinkId: String,
-        referenceId: String,
-        status: String,
-        signature: String
-    ) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val context = LocalContext.current
-    var isPageLoading by remember { mutableStateOf(true) }
-    var callbackDispatched by remember(session.checkoutUrl) { mutableStateOf(false) }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = session.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "${formatInr(session.amount)} • Hosted by Razorpay",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Close Razorpay Checkout"
-                            )
-                        }
-                    }
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
                 )
-            }
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                var webLoadError by remember { mutableStateOf<String?>(null) }
-
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.javaScriptCanOpenWindowsAutomatically = true
-                            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                            CookieManager.getInstance().setAcceptCookie(true)
-                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    isPageLoading = false
-                                }
-
-                                override fun onReceivedError(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                    error: WebResourceError?
-                                ) {
-                                    if (request?.isForMainFrame == true) {
-                                        isPageLoading = false
-                                        webLoadError = error?.description?.toString()
-                                            ?: "Unable to load Razorpay checkout page."
-                                    }
-                                }
-
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?
-                                ): Boolean {
-                                    val url = request?.url?.toString().orEmpty()
-                                    val uri = request?.url ?: return false
-
-                                    val isCallback = url.startsWith(session.callbackUrl) ||
-                                        url.startsWith(RazorpayGatewayClient.DEFAULT_CALLBACK_URL) ||
-                                        uri.scheme == "krishivantri"
-
-                                    if (isCallback) {
-                                        if (!callbackDispatched) {
-                                            callbackDispatched = true
-                                            val paymentId = uri.getQueryParameter("razorpay_payment_id").orEmpty()
-                                            val linkId = uri.getQueryParameter("razorpay_payment_link_id").orEmpty()
-                                            val refId = uri.getQueryParameter("razorpay_payment_link_reference_id").orEmpty()
-                                            val status = uri.getQueryParameter("razorpay_payment_link_status").orEmpty()
-                                            val signature = uri.getQueryParameter("razorpay_signature").orEmpty()
-                                            onPaymentCallback(paymentId, linkId, refId, status, signature)
-                                        }
-                                        return true
-                                    }
-
-                                    val scheme = uri.scheme?.lowercase(Locale.ROOT).orEmpty()
-                                    if (scheme == "intent") {
-                                        runCatching {
-                                            val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                                            if (intent.resolveActivity(context.packageManager) != null) {
-                                                context.startActivity(intent)
-                                            } else {
-                                                val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                                                if (!fallbackUrl.isNullOrBlank()) {
-                                                    view?.loadUrl(fallbackUrl)
-                                                }
-                                            }
-                                        }
-                                        return true
-                                    }
-                                    if (scheme != "http" && scheme != "https") {
-                                        runCatching {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
-                                        }
-                                        return true
-                                    }
-                                    return false
-                                }
-                            }
-                            loadUrl(session.checkoutUrl)
-                        }
-                    }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Pay ${formatInr(state.amount)} via $selectedUpiApp",
+                    style = MaterialTheme.typography.labelLarge
                 )
-
-                webLoadError?.let { errText ->
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = AlertRustBg,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        Text(
-                            text = errText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = AlertRust,
-                            modifier = Modifier.padding(12.dp)
-                        )
-                    }
-                }
-
-                if (isPageLoading || session.isVerifying) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.TopCenter),
-                        color = ForestGreen
-                    )
-                }
             }
         }
     }

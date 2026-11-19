@@ -24,13 +24,8 @@ import com.example.data.model.PilotPerformanceStat
 import com.example.data.model.PilotProfileEntity
 import com.example.data.model.UserEntity
 import com.example.data.model.UserRole
-import com.example.data.remote.KrishivantriRuntimeConfig
-import com.example.data.remote.RazorpayGatewayClient
-import com.example.data.remote.RazorpaySessionResult
-import com.example.data.remote.RazorpayVerifyResult
 import com.example.data.repository.AcceptOrderResult
 import com.example.data.repository.AuthResult
-import com.example.data.repository.CancelOrderResult
 import com.example.data.repository.FarmRepository
 import com.example.data.repository.JobDoneResult
 import com.example.data.repository.KrishivantriRepository
@@ -55,19 +50,7 @@ data class RazorpaySheetState(
     val title: String,
     val subtitle: String,
     val amount: Double,
-    val purpose: RazorpayPurpose,
-    val isCreatingSession: Boolean = false,
-    val errorMessage: String? = null
-)
-
-data class HostedCheckoutSession(
-    val title: String,
-    val amount: Double,
-    val paymentLinkId: String,
-    val checkoutUrl: String,
-    val callbackUrl: String,
-    val referenceId: String,
-    val isVerifying: Boolean = false
+    val purpose: RazorpayPurpose
 )
 
 sealed class RazorpayPurpose {
@@ -142,9 +125,6 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     private val _razorpaySheet = MutableStateFlow<RazorpaySheetState?>(null)
     val razorpaySheet: StateFlow<RazorpaySheetState?> = _razorpaySheet.asStateFlow()
-
-    private val _hostedCheckoutSession = MutableStateFlow<HostedCheckoutSession?>(null)
-    val hostedCheckoutSession: StateFlow<HostedCheckoutSession?> = _hostedCheckoutSession.asStateFlow()
 
     private val _insufficientWalletAlert = MutableStateFlow<InsufficientWalletAlert?>(null)
     val insufficientWalletAlert: StateFlow<InsufficientWalletAlert?> = _insufficientWalletAlert.asStateFlow()
@@ -381,6 +361,38 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             when (val result = repository.loginAdmin(phone, passcode)) {
                 is AuthResult.Success -> _currentUser.value = result.user
                 is AuthResult.Error -> onFailed(result.message)
+            }
+        }
+    }
+
+    fun updateFarmerCredentials(
+        name: String,
+        phone: String,
+        farmerIdNumber: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val user = _currentUser.value ?: return
+        if (name.isBlank()) {
+            onError("Enter your full name.")
+            return
+        }
+        if (phone.trim().length < 10) {
+            onError("Enter a valid 10-digit mobile number.")
+            return
+        }
+        if (farmerIdNumber.isBlank()) {
+            onError("Enter your Farmer ID number.")
+            return
+        }
+        viewModelScope.launch {
+            when (val result = repository.updateFarmerCredentials(user.id, name, phone, farmerIdNumber)) {
+                is AuthResult.Success -> {
+                    _currentUser.value = result.user
+                    _snackbarMessage.value = "Farmer credentials updated successfully."
+                    onSuccess()
+                }
+                is AuthResult.Error -> onError(result.message)
             }
         }
     }
@@ -733,98 +745,6 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    fun startRazorpayCheckout(onFallbackToSdk: (RazorpaySheetState) -> Unit) {
-        val sheet = _razorpaySheet.value ?: return
-        val user = _currentUser.value ?: return
-        if (sheet.isCreatingSession) return
-        viewModelScope.launch {
-            _razorpaySheet.update { it?.copy(isCreatingSession = true, errorMessage = null) }
-            val referenceId = "kv_${System.currentTimeMillis()}"
-            when (
-                val sessionResult = RazorpayGatewayClient.createHostedCheckoutSession(
-                    amountInr = sheet.amount,
-                    description = sheet.subtitle,
-                    customerName = user.name,
-                    customerPhone = user.phone,
-                    referenceId = referenceId
-                )
-            ) {
-                is RazorpaySessionResult.Success -> {
-                    _razorpaySheet.update { it?.copy(isCreatingSession = false, errorMessage = null) }
-                    _hostedCheckoutSession.value = HostedCheckoutSession(
-                        title = sheet.title,
-                        amount = sheet.amount,
-                        paymentLinkId = sessionResult.paymentLinkId,
-                        checkoutUrl = sessionResult.checkoutUrl,
-                        callbackUrl = sessionResult.callbackUrl,
-                        referenceId = sessionResult.referenceId
-                    )
-                }
-                is RazorpaySessionResult.Error -> {
-                    if (KrishivantriRuntimeConfig.isRazorpayConfigured()) {
-                        _razorpaySheet.update { it?.copy(isCreatingSession = false, errorMessage = null) }
-                        onFallbackToSdk(sheet)
-                    } else {
-                        val guidance = "Add RAZORPAY_KEY_ID in the AI Studio Secrets panel (or deploy create-razorpay-checkout to Supabase) to connect Razorpay."
-                        _razorpaySheet.update {
-                            it?.copy(isCreatingSession = false, errorMessage = guidance)
-                        }
-                        _snackbarMessage.value = guidance
-                    }
-                }
-            }
-        }
-    }
-
-    fun onRazorpayPaymentError(code: Int, description: String?) {
-        val detail = description?.takeIf { it.isNotBlank() } ?: "Payment cancelled or declined"
-        val message = "Razorpay checkout incomplete ($code): $detail"
-        _razorpaySheet.update { it?.copy(isCreatingSession = false, errorMessage = message) }
-        _snackbarMessage.value = message
-    }
-
-    fun verifyAndCompleteHostedCheckout(
-        paymentId: String,
-        paymentLinkId: String,
-        referenceId: String,
-        status: String,
-        signature: String
-    ) {
-        val session = _hostedCheckoutSession.value ?: return
-        if (session.isVerifying) return
-        viewModelScope.launch {
-            _hostedCheckoutSession.update { it?.copy(isVerifying = true) }
-            when (
-                val verifyResult = RazorpayGatewayClient.verifyPayment(
-                    paymentId = paymentId,
-                    paymentLinkId = paymentLinkId.ifBlank { session.paymentLinkId },
-                    referenceId = referenceId.ifBlank { session.referenceId },
-                    status = status.ifBlank { "paid" },
-                    signature = signature
-                )
-            ) {
-                is RazorpayVerifyResult.Verified -> {
-                    _hostedCheckoutSession.value = null
-                    confirmRazorpayPayment(verifyResult.paymentId)
-                }
-                is RazorpayVerifyResult.Error -> {
-                    _hostedCheckoutSession.value = null
-                    _razorpaySheet.update {
-                        it?.copy(isCreatingSession = false, errorMessage = verifyResult.message)
-                    }
-                    _snackbarMessage.value = verifyResult.message
-                }
-            }
-        }
-    }
-
-    fun dismissHostedCheckout(cancelledByUser: Boolean = true) {
-        _hostedCheckoutSession.value = null
-        if (cancelledByUser) {
-            _snackbarMessage.value = "Razorpay checkout closed before completion."
-        }
-    }
-
     fun confirmRazorpayPayment(razorpayPaymentId: String? = null) {
         val sheet = _razorpaySheet.value ?: return
         val user = _currentUser.value ?: return
@@ -859,6 +779,17 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    fun onRazorpayPaymentError(code: Int, description: String?) {
+        _razorpaySheet.value = null
+        val detail = description?.takeIf { it.isNotBlank() } ?: "Payment cancelled or declined"
+        _snackbarMessage.value = "Razorpay checkout incomplete ($code): $detail"
+    }
+
+    fun onRazorpayKeyMissing() {
+        _razorpaySheet.value = null
+        _snackbarMessage.value = "Configure RAZORPAY_KEY_ID in the AI Studio Secrets panel to open live Razorpay Checkout."
+    }
+
     private fun startFarmerSupabaseSync(farmerId: String) {
         farmerSupabaseSyncJob?.cancel()
         farmerSupabaseSyncJob = viewModelScope.launch {
@@ -880,61 +811,28 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         _mapBookingState.update { it.copy(bookingSuccessOrderId = null) }
     }
 
-    fun updateFarmerCredentials(
-        name: String,
-        phone: String,
-        farmerIdNumber: String,
-        onSuccess: () -> Unit,
-        onError: (String) -> Unit
-    ) {
-        val user = _currentUser.value ?: return
+    fun ratePilot(orderId: String, stars: Int) {
         viewModelScope.launch {
-            when (val result = repository.updateFarmerCredentials(user.id, name, phone, farmerIdNumber)) {
-                is AuthResult.Success -> {
-                    _currentUser.value = result.user
-                    _snackbarMessage.value = "Farmer credentials updated."
-                    onSuccess()
-                }
-                is AuthResult.Error -> {
-                    onError(result.message)
-                }
-            }
+            repository.ratePilotForOrder(orderId, stars)
+            _snackbarMessage.value = "Thank you for rating your pilot ($stars★)!"
         }
     }
 
-    fun confirmJobDone(orderId: String) {
-        val farmer = _currentUser.value ?: return
+    fun confirmFarmerJobDone(orderId: String) {
         viewModelScope.launch {
-            when (val result = repository.confirmJobDoneByFarmer(orderId, farmer.id)) {
+            when (val result = repository.confirmJobDoneByFarmer(orderId)) {
                 is JobDoneResult.Success -> {
-                    val walletMsg = if (result.transferredAmount > 0.0) {
-                        val pilotLabel = result.pilotName ?: "pilot"
-                        "₹${result.transferredAmount.toInt()} transferred to $pilotLabel's wallet & "
+                    val recipient = result.pilotName ?: "pilot"
+                    _snackbarMessage.value = if (result.amountTransferredToPilot > 0.0) {
+                        "Job done confirmed! ₹${result.amountTransferredToPilot.toInt()} transferred to $recipient's wallet (+1 Harvest Coin)."
                     } else {
-                        ""
+                        "Job done confirmed! Spraying settled (+1 Harvest Coin)."
                     }
-                    _snackbarMessage.value = "Job Done confirmed! ${walletMsg}+1 Harvest Coin awarded."
                 }
                 is JobDoneResult.Error -> {
                     _snackbarMessage.value = result.message
                 }
             }
-        }
-    }
-
-    fun attemptCancelOrder(orderId: String) {
-        viewModelScope.launch {
-            when (val result = repository.cancelOrder(orderId)) {
-                is CancelOrderResult.NotAllowed -> _snackbarMessage.value = result.message
-                is CancelOrderResult.Error -> _snackbarMessage.value = result.message
-            }
-        }
-    }
-
-    fun ratePilot(orderId: String, stars: Int) {
-        viewModelScope.launch {
-            repository.ratePilotForOrder(orderId, stars)
-            _snackbarMessage.value = "Thank you for rating your pilot ($stars★)!"
         }
     }
 
@@ -1031,8 +929,8 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun completeOrder(orderId: String) {
         viewModelScope.launch {
-            repository.completeOrder(orderId)
-            _snackbarMessage.value = "Spraying marked done! Waiting for farmer to tap Job Done to release wallet payout."
+            repository.markPilotSprayingCompleted(orderId)
+            _snackbarMessage.value = "Spraying marked finished. Waiting for Farmer 'Job Done' confirmation to credit wallet."
         }
     }
 

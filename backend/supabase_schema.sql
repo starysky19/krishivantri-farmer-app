@@ -46,7 +46,7 @@ create table if not exists public.orders (
     pilot_earnings double precision not null,
     payment_method text not null check (payment_method in ('online', 'cash')),
     payment_status text not null check (payment_status in ('pending', 'paid')),
-    order_status text not null check (order_status in ('pending', 'accepted', 'in_progress', 'pilot_completed', 'completed', 'cancelled')),
+    order_status text not null check (order_status in ('pending', 'accepted', 'in_progress', 'awaiting_confirmation', 'completed', 'cancelled')),
     pilot_eta_minutes integer not null default 15,
     initial_eta_minutes integer not null default 15,
     distance_km double precision,
@@ -55,6 +55,7 @@ create table if not exists public.orders (
     accepted_at bigint,
     pilot_rating integer,
     razorpay_payment_id text,
+    pilot_wallet_credited boolean not null default false,
     created_at bigint not null default (extract(epoch from now()) * 1000)::bigint
 );
 

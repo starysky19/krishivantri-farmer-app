@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,19 +19,22 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Agriculture
 import androidx.compose.material.icons.rounded.Badge
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -54,7 +58,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.model.DroneType
 import com.example.shared.R as SharedR
 import com.example.ui.components.KrishivantriBrandMark
 import com.example.ui.theme.AlertRust
@@ -64,8 +70,7 @@ import com.example.ui.theme.SoftSage
 import com.example.ui.viewmodel.AuthUiState
 
 /**
- * Dedicated Farmer Login / Signup Screen for the standalone "Krishivantri" app.
- * No Drone Pilot signup options or public platform statistics are exposed here.
+ * Dedicated Farmer Login / Registration screen for the Krishivantri Farmer App.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -74,7 +79,15 @@ fun AuthScreen(
     onToggleSignUp: (Boolean) -> Unit,
     onSubmitFarmer: (name: String, phone: String, farmerId: String) -> Unit,
     onSubmitAdmin: (phone: String, passcode: String, onError: (String) -> Unit) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onSubmitPilot: ((
+        name: String,
+        phone: String,
+        droneType: DroneType,
+        tankCapacityText: String,
+        licenseUri: String,
+        bankUpiId: String
+    ) -> Unit)? = null
 ) {
     var name by rememberSaveable { mutableStateOf("") }
     var phone by rememberSaveable { mutableStateOf("") }
@@ -99,7 +112,7 @@ fun AuthScreen(
         ) {
             KrishivantriBrandMark(
                 title = "Krishivantri",
-                subtitle = "Smart Drone Spraying for Your Farms"
+                subtitle = "Precision Drone Spraying for Farmers"
             )
 
             Surface(
@@ -108,10 +121,10 @@ fun AuthScreen(
                 tonalElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Box(modifier = Modifier.height(176.dp)) {
+                Box(modifier = Modifier.height(172.dp)) {
                     Image(
                         painter = painterResource(id = SharedR.drawable.img_krishivantri_hero_1794983437632),
-                        contentDescription = "Agricultural drone spraying lush green crop terraces",
+                        contentDescription = "Agricultural spraying drone flying above crop fields",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -122,7 +135,7 @@ fun AuthScreen(
                                 Brush.verticalGradient(
                                     colors = listOf(
                                         Color.Transparent,
-                                        ForestGreen.copy(alpha = 0.90f)
+                                        ForestGreen.copy(alpha = 0.92f)
                                     )
                                 )
                             )
@@ -137,26 +150,26 @@ fun AuthScreen(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Agriculture,
+                                imageVector = Icons.Rounded.Eco,
                                 contentDescription = null,
                                 tint = SoftSage,
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "FARMER EDITION",
+                                text = "FARMER SERVICE PORTAL",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = SoftSage
                             )
                         }
                         Text(
-                            text = "Map Your Land & Book Spraying",
+                            text = "Precision Drone Crop Spraying",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
                         Text(
-                            text = "Outline your field on satellite maps, see exact acre pricing, and track pilot arrival live.",
+                            text = "Map your farm boundary, track arrival of licensed drone pilots, and release payout upon job completion.",
                             style = MaterialTheme.typography.bodySmall,
                             color = SoftSage
                         )
@@ -182,7 +195,7 @@ fun AuthScreen(
                             .padding(4.dp)
                     ) {
                         FarmerAuthTab(
-                            label = "New Farmer Signup",
+                            label = "New Farmer Sign Up",
                             selected = state.isSignUpMode,
                             onClick = { onToggleSignUp(true) },
                             modifier = Modifier
@@ -190,7 +203,7 @@ fun AuthScreen(
                                 .testTag("farmer_auth_tab_signup")
                         )
                         FarmerAuthTab(
-                            label = "Existing Farmer",
+                            label = "Farmer Sign In",
                             selected = !state.isSignUpMode,
                             onClick = { onToggleSignUp(false) },
                             modifier = Modifier
@@ -200,23 +213,40 @@ fun AuthScreen(
                     }
 
                     AnimatedVisibility(visible = state.isSignUpMode) {
-                        OutlinedTextField(
-                            value = name,
-                            onValueChange = { name = it },
-                            label = { Text("Farmer Full Name") },
-                            leadingIcon = { Icon(Icons.Rounded.Person, contentDescription = null) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("farmer_auth_name_input")
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedTextField(
+                                value = name,
+                                onValueChange = { name = it },
+                                label = { Text("Full Name") },
+                                placeholder = { Text("e.g. Ramesh Patel") },
+                                leadingIcon = { Icon(Icons.Rounded.Person, contentDescription = null) },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("farmer_auth_name_input")
+                            )
+
+                            OutlinedTextField(
+                                value = farmerId,
+                                onValueChange = { farmerId = it },
+                                label = { Text("Farmer ID / Registration No.") },
+                                placeholder = { Text("e.g. MH-FRM-00248") },
+                                leadingIcon = { Icon(Icons.Rounded.Badge, contentDescription = null) },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("farmer_auth_id_input")
+                            )
+                        }
                     }
 
                     OutlinedTextField(
                         value = phone,
                         onValueChange = { if (it.length <= 15) phone = it },
-                        label = { Text("Mobile Number") },
+                        label = { Text("Mobile Number (10 digits)") },
+                        placeholder = { Text("e.g. 9876543210") },
                         leadingIcon = { Icon(Icons.Rounded.Phone, contentDescription = null) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         singleLine = true,
@@ -225,21 +255,6 @@ fun AuthScreen(
                             .fillMaxWidth()
                             .testTag("farmer_auth_phone_input")
                     )
-
-                    AnimatedVisibility(visible = state.isSignUpMode) {
-                        OutlinedTextField(
-                            value = farmerId,
-                            onValueChange = { farmerId = it },
-                            label = { Text("Farmer ID Number") },
-                            placeholder = { Text("e.g. KISAN-MH-4821") },
-                            leadingIcon = { Icon(Icons.Rounded.Badge, contentDescription = null) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("farmer_auth_id_input")
-                        )
-                    }
 
                     val errorMsg = state.errorMessage
                     if (!errorMsg.isNullOrBlank()) {
@@ -258,7 +273,9 @@ fun AuthScreen(
                     }
 
                     Button(
-                        onClick = { onSubmitFarmer(name, phone, farmerId) },
+                        onClick = {
+                            onSubmitFarmer(name, phone, farmerId)
+                        },
                         enabled = !state.isLoading,
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
@@ -267,18 +284,26 @@ fun AuthScreen(
                             .height(54.dp)
                             .testTag("farmer_auth_submit_button")
                     ) {
-                        Text(
-                            text = if (state.isSignUpMode) {
-                                "Verify Farmer ID & Continue"
-                            } else {
-                                "Sign In to My Farms"
-                            },
-                            style = MaterialTheme.typography.labelLarge
-                        )
+                        if (state.isLoading) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                text = if (state.isSignUpMode) {
+                                    "Register Farmland & Sign In"
+                                } else {
+                                    "Sign In with Mobile"
+                                },
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
                     }
 
                     Text(
-                        text = "Are you a drone pilot? Use the Krishivantri Drone Pilot app to accept jobs.",
+                        text = "Krishivantri escrow protects your payments: pilot payout is only credited after you confirm 'Job Done'.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -296,7 +321,7 @@ fun AuthScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Krishivantri • Precision Agritech for Farmers",
+                    text = "Krishivantri Farmer Edition • Precision Aerial Agritech",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
@@ -332,7 +357,9 @@ private fun FarmerAuthTab(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (selected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

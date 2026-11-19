@@ -10,7 +10,6 @@ import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
-import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
 
@@ -80,13 +79,6 @@ data class WalletTopUpRequest(val pilot_id: String, val amount: Double, val razo
 data class RatePilotRequest(val rating: Int)
 
 @JsonClass(generateAdapter = true)
-data class UpdateFarmerCredentialsRequest(
-    val name: String,
-    val phone: String,
-    val farmer_id_number: String
-)
-
-@JsonClass(generateAdapter = true)
 data class ApiStatusResponse(val success: Boolean, val message: String)
 
 interface KrishivantriApiService {
@@ -102,17 +94,14 @@ interface KrishivantriApiService {
     @POST("farmer/orders/")
     suspend fun createOrder(@Body request: CreateOrderRequest): OrderResponseDto
 
-    @PATCH("farmer/profile/")
-    suspend fun updateFarmerCredentials(@Body request: UpdateFarmerCredentialsRequest): AuthResponse
-
-    @POST("farmer/orders/{orderId}/job-done/")
-    suspend fun confirmJobDone(@Path("orderId") orderId: String): OrderResponseDto
-
     @POST("farmer/orders/{orderId}/rate/")
     suspend fun ratePilot(
         @Path("orderId") orderId: String,
         @Body request: RatePilotRequest
     ): ApiStatusResponse
+
+    @POST("farmer/orders/{orderId}/job-done/")
+    suspend fun confirmJobDone(@Path("orderId") orderId: String): OrderResponseDto
 
     @POST("pilot/toggle-online/")
     suspend fun togglePilotOnline(@Body request: ToggleOnlineRequest): ApiStatusResponse

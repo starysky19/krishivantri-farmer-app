@@ -22,7 +22,7 @@ import com.example.data.model.UserEntity
         RejectedOrderEntity::class,
         FarmBoundaryEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class KrishivantriDatabase : RoomDatabase() {
