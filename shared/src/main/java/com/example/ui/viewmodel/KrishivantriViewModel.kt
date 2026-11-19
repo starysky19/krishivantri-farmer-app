@@ -601,6 +601,7 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun clearPolygon() {
         recalculatePolygon(emptyList())
+        _mapBookingState.update { it.copy(farmNameInput = "") }
     }
 
     fun zoomMap(zoomIn: Boolean) {

@@ -268,23 +268,22 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
             return AuthResult.Error("This mobile number is already registered on another account.")
         }
 
-        val updatedUser: UserEntity
-        val updatedProfile: FarmerProfileEntity
-        database.withTransaction {
+        val (updatedUser, updatedProfile) = database.withTransaction {
             val currentUser = dao.getUserById(userId)
                 ?: throw IllegalStateException("Farmer account not found.")
             val currentProfile = dao.getFarmerProfile(userId)
-            updatedUser = currentUser.copy(
+            val nextUser = currentUser.copy(
                 name = cleanName,
                 phone = cleanPhone
             )
-            updatedProfile = FarmerProfileEntity(
+            val nextProfile = FarmerProfileEntity(
                 userId = userId,
                 farmerIdNumber = cleanFarmerId,
                 coins = currentProfile?.coins ?: 0
             )
-            dao.insertUser(updatedUser)
-            dao.insertFarmerProfile(updatedProfile)
+            dao.insertUser(nextUser)
+            dao.insertFarmerProfile(nextProfile)
+            nextUser to nextProfile
         }
 
         withContext(Dispatchers.IO) {
@@ -1098,21 +1097,21 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
             return AuthResult.Error("Tank capacity must be positive.")
         }
 
-        val updatedUser: UserEntity
-        database.withTransaction {
+        val updatedUser = database.withTransaction {
             val user = dao.getUserById(pilotId)
                 ?: throw IllegalStateException("Pilot user not found.")
             val profile = dao.getPilotProfile(pilotId)
                 ?: throw IllegalStateException("Pilot profile not found.")
-            updatedUser = user.copy(name = cleanName)
+            val nextUser = user.copy(name = cleanName)
             val updatedProfile = profile.copy(
                 droneType = droneType.apiValue,
                 tankCapacity = tankCapacity,
                 bankUpiId = cleanUpi,
                 licenseDocumentUri = licenseDocumentUri ?: profile.licenseDocumentUri
             )
-            dao.insertUser(updatedUser)
+            dao.insertUser(nextUser)
             dao.updatePilotProfile(updatedProfile)
+            nextUser
         }
         return AuthResult.Success(updatedUser)
     }

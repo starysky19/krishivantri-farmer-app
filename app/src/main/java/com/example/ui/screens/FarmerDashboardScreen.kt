@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -39,7 +42,7 @@ import androidx.compose.material.icons.rounded.Agriculture
 import androidx.compose.material.icons.rounded.Assignment
 import androidx.compose.material.icons.rounded.Badge
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.Download
@@ -69,6 +72,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -97,6 +101,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -673,480 +678,652 @@ private fun FarmerMapBookingTab(
 ) {
     var showSuggestions by remember { mutableStateOf(false) }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        // MapLibre Farm Map
-        MapLibreFarmMap(
-            mapRepository = mapRepository,
-            styleType = mapState.mapStyleType,
-            cameraTarget = mapState.mapCenter,
-            cameraFlyNonce = mapState.cameraFlyNonce,
-            zoomInNonce = mapState.zoomInNonce,
-            zoomOutNonce = mapState.zoomOutNonce,
-            resetCompassNonce = mapState.resetCompassNonce,
-            styleRetryNonce = mapState.styleRetryNonce,
-            hasLocationPermission = mapState.hasLocationPermission,
-            drawingPoints = mapState.polygonPoints,
-            computedAcres = mapState.computedAcres,
-            computedHectares = mapState.computedHectares,
-            savedFarms = savedFarms,
-            bookingOrders = bookingOrders,
-            operators = realtimeOperators,
-            onMapTapPoint = onMapTapPoint,
-            onUpdateBoundaryPoint = onUpdateBoundaryPoint,
-            onMapLoadingChanged = onMapLoadingChanged,
-            onMapError = onMapError,
-            onCameraMoved = onMapCameraMoved,
-            modifier = Modifier.fillMaxSize()
-        )
+    val mapPane: @Composable (Modifier) -> Unit = { paneModifier ->
+        Box(modifier = paneModifier) {
+            MapLibreFarmMap(
+                mapRepository = mapRepository,
+                styleType = mapState.mapStyleType,
+                cameraTarget = mapState.mapCenter,
+                cameraFlyNonce = mapState.cameraFlyNonce,
+                zoomInNonce = mapState.zoomInNonce,
+                zoomOutNonce = mapState.zoomOutNonce,
+                resetCompassNonce = mapState.resetCompassNonce,
+                styleRetryNonce = mapState.styleRetryNonce,
+                hasLocationPermission = mapState.hasLocationPermission,
+                drawingPoints = mapState.polygonPoints,
+                computedAcres = mapState.computedAcres,
+                computedHectares = mapState.computedHectares,
+                savedFarms = savedFarms,
+                bookingOrders = bookingOrders,
+                operators = realtimeOperators,
+                onMapTapPoint = onMapTapPoint,
+                onUpdateBoundaryPoint = onUpdateBoundaryPoint,
+                onMapLoadingChanged = onMapLoadingChanged,
+                onMapError = onMapError,
+                onCameraMoved = onMapCameraMoved,
+                modifier = Modifier.fillMaxSize()
+            )
 
-        // Top Search & Style Bar
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 4.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            // Compact Top Search & Style Bar
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    tonalElevation = 4.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Search,
-                        contentDescription = "Search",
-                        tint = ForestGreen,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    OutlinedTextField(
-                        value = mapState.searchQuery,
-                        onValueChange = {
-                            onSearchQueryChange(it)
-                            showSuggestions = true
-                        },
-                        placeholder = { Text("Search taluka, village, or town…") },
-                        singleLine = true,
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .testTag("map_search_input"),
-                        colors = androidx.compose.material3.TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        )
-                    )
-                    IconButton(
-                        onClick = onCenterMap,
-                        modifier = Modifier.testTag("map_search_button")
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .padding(start = 10.dp, end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Search,
-                            contentDescription = "Search and Center",
-                            tint = ForestGreen
+                            contentDescription = "Search",
+                            tint = ForestGreen,
+                            modifier = Modifier.size(18.dp)
                         )
-                    }
-                    IconButton(
-                        onClick = onRefreshCurrentLocation,
-                        modifier = Modifier.testTag("map_gps_center_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.MyLocation,
-                            contentDescription = "My GPS Location",
-                            tint = EmeraldPulse
-                        )
-                    }
-                }
-            }
-
-            // Location suggestions dropdown
-            if (showSuggestions && mapState.locationSuggestions.isNotEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 6.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column {
-                        mapState.locationSuggestions.take(4).forEach { suggestion ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = suggestion.displayName,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (mapState.searchQuery.isEmpty()) {
+                                Text(
+                                    text = "Search taluka, village, or town…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            BasicTextField(
+                                value = mapState.searchQuery,
+                                onValueChange = {
+                                    onSearchQueryChange(it)
+                                    showSuggestions = true
                                 },
-                                onClick = {
-                                    onSelectLocationSuggestion(suggestion)
-                                    showSuggestions = false
-                                }
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                cursorBrush = SolidColor(ForestGreen),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("map_search_input")
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                showSuggestions = false
+                                onCenterMap()
+                            },
+                            modifier = Modifier.testTag("map_search_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = "Search and Center",
+                                tint = ForestGreen
+                            )
+                        }
+                        IconButton(
+                            onClick = onRefreshCurrentLocation,
+                            modifier = Modifier.testTag("map_gps_center_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.MyLocation,
+                                contentDescription = "My GPS Location",
+                                tint = EmeraldPulse
                             )
                         }
                     }
                 }
-            }
 
-            // Map Style & Offline Cache Chips
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                MapStyleType.entries.forEach { style ->
-                    val isSelected = mapState.mapStyleType == style
+                // Location suggestions dropdown
+                if (showSuggestions && mapState.locationSuggestions.isNotEmpty()) {
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onSelectMapStyle(style) }
-                    ) {
-                        Text(
-                            text = style.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Cache offline chip
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onCacheCurrentRegionOffline)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Download,
-                            contentDescription = "Save Offline Map",
-                            tint = ForestGreen,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = "Save Offline",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = ForestGreen
-                        )
-                    }
-                }
-            }
-
-            // Offline caching progress indicator
-            mapState.offlineDownloadProgress?.let { progress ->
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text(
-                            text = "Caching offline map tiles: $progress%",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                        LinearProgressIndicator(
-                            progress = { progress / 100f },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(4.dp),
-                            color = EmeraldPulse
-                        )
-                    }
-                }
-            }
-        }
-
-        // Floating Map Controls (Right Side)
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 4.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .clickable { onZoomMap(true) }
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Add, contentDescription = "Zoom In", tint = ForestGreen)
-                }
-            }
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 4.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .clickable { onZoomMap(false) }
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Remove, contentDescription = "Zoom Out", tint = ForestGreen)
-                }
-            }
-            if (mapState.polygonPoints.isNotEmpty()) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape)
-                        .clickable(onClick = onUndoPolygonPoint)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.Undo, contentDescription = "Undo Point", tint = ForestGreen)
-                    }
-                }
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape)
-                        .clickable(onClick = onClearPolygon)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.Clear, contentDescription = "Clear Boundary", tint = AlertRust)
-                    }
-                }
-            }
-        }
-
-        // Bottom Farmland Booking Panel
-        Surface(
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 8.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(16.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Polygon Status / Calculation Banner
-                if (mapState.polygonPoints.size < 3) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Info,
-                            contentDescription = null,
-                            tint = EmeraldPulse,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = if (mapState.polygonPoints.isEmpty()) {
-                                "Tap 3 or more boundary points on the map to outline your farmland."
-                            } else {
-                                "${mapState.polygonPoints.size} points tapped • Tap ${3 - mapState.polygonPoints.size} more to close boundary"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 6.dp,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Column {
-                            Text(
-                                text = "Farmland Boundary Closed",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = EmeraldPulse,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "${mapState.computedAcres} Acres • ${mapState.computedHectares} Ha",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "Standard Tariff (₹450/ac)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = formatInr(mapState.computedAmount),
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = ForestGreen
-                            )
-                        }
-                    }
-
-                    // Save Farm Boundary Form
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = mapState.farmNameInput,
-                            onValueChange = onFarmNameChange,
-                            placeholder = { Text("Farm name (e.g. North Sugarcane)") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedButton(
-                            onClick = onSaveFarmToSupabase,
-                            enabled = !mapState.isSavingFarm,
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Save Farm")
-                        }
-                    }
-                }
-
-                // Payment Method Selector
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = "Payment Method",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        PaymentMethod.entries.forEach { method ->
-                            val isSelected = mapState.selectedPaymentMethod == method
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isSelected) SoftSage else MaterialTheme.colorScheme.surfaceVariant,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { onSelectPaymentMethod(method) }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (method == PaymentMethod.ONLINE) {
-                                            Icons.Rounded.Payments
-                                        } else {
-                                            Icons.Rounded.Agriculture
-                                        },
-                                        contentDescription = null,
-                                        tint = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(
-                                        text = method.label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                            mapState.locationSuggestions.take(4).forEach { suggestion ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = suggestion.displayName,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
+                                    onClick = {
+                                        onSelectLocationSuggestion(suggestion)
+                                        showSuggestions = false
+                                    }
+                                )
                             }
                         }
                     }
                 }
 
-                // Non-Cancellable Policy Notice Card
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = HarvestGoldBg,
-                    border = BorderStroke(1.dp, HarvestAmber.copy(alpha = 0.45f)),
-                    modifier = Modifier.fillMaxWidth()
+                // Map Style & Offline Cache Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    MapStyleType.entries.forEach { style ->
+                        val isSelected = mapState.mapStyleType == style
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) {
+                                ForestGreen
+                            } else {
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSelectMapStyle(style) }
+                        ) {
+                            Text(
+                                text = style.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onCacheCurrentRegionOffline)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Lock,
-                            contentDescription = null,
-                            tint = HarvestAmber,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "Non-cancellable once booked & paid. Payout to pilot is held safely in escrow and transferred ONLY when you click 'Job Done'.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = ForestGreen
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Download,
+                                contentDescription = "Save Offline Map",
+                                tint = ForestGreen,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Offline",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ForestGreen
+                            )
+                        }
                     }
                 }
 
-                // CTA Booking Button
-                Button(
-                    onClick = onConfirmOrder,
-                    enabled = mapState.polygonPoints.size >= 3 && mapState.computedAcres > 0.0,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                        .testTag("farmer_confirm_booking_button")
+                mapState.offlineDownloadProgress?.let { progress ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            Text(
+                                text = "Caching offline map tiles: $progress%",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            LinearProgressIndicator(
+                                progress = { progress / 100f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(4.dp),
+                                color = EmeraldPulse
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bottom-Start Point Selection Status + Quick Undo/Delete Pills
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                    tonalElevation = 4.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.FlightTakeoff,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = if (mapState.polygonPoints.size < 3) {
-                            "Outline Farmland on Map"
-                        } else {
-                            "Book Spray Service • ${formatInr(mapState.computedAmount)}"
+                        text = when {
+                            mapState.polygonPoints.isEmpty() -> "Tap map to mark corners"
+                            mapState.polygonPoints.size < 3 ->
+                                "${mapState.polygonPoints.size} pts • Tap ${3 - mapState.polygonPoints.size}+ more"
+                            else -> "${mapState.polygonPoints.size} pts • Tap to add more"
                         },
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (mapState.polygonPoints.size >= 3) ForestGreen else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
                     )
                 }
+
+                if (mapState.polygonPoints.isNotEmpty()) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                        tonalElevation = 4.dp,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onUndoPolygonPoint)
+                            .testTag("map_undo_point_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Undo,
+                                contentDescription = "Undo Last Point",
+                                tint = ForestGreen,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                        tonalElevation = 4.dp,
+                        border = BorderStroke(1.dp, AlertRust.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onClearPolygon)
+                            .testTag("map_delete_area_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.DeleteOutline,
+                                contentDescription = "Delete Selected Area",
+                                tint = AlertRust,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bottom-End Zoom Controls
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 10.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                    tonalElevation = 4.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .clickable { onZoomMap(true) }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Add, contentDescription = "Zoom In", tint = ForestGreen)
+                    }
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                    tonalElevation = 4.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .clickable { onZoomMap(false) }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Remove, contentDescription = "Zoom Out", tint = ForestGreen)
+                    }
+                }
+            }
+        }
+    }
+
+    val bookingPane: @Composable (Modifier) -> Unit = { paneModifier ->
+        Surface(
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = paneModifier
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Pinned Header: Selected Area, Amount Value & Delete/Reselect Controls
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (mapState.polygonPoints.size >= 3) {
+                            SoftSage
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (mapState.polygonPoints.size >= 3) {
+                                ForestGreen.copy(alpha = 0.35f)
+                            } else {
+                                MaterialTheme.colorScheme.outline
+                            }
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = when {
+                                        mapState.polygonPoints.isEmpty() -> "No Area Selected"
+                                        mapState.polygonPoints.size < 3 ->
+                                            "${mapState.polygonPoints.size} Point${if (mapState.polygonPoints.size == 1) "" else "s"} Placed"
+                                        else -> "${mapState.polygonPoints.size} Points • Selected Area"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (mapState.polygonPoints.size >= 3) EmeraldPulse else ForestGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (mapState.polygonPoints.size >= 3) {
+                                        "${mapState.computedAcres} Acres • ${mapState.computedHectares} Ha"
+                                    } else {
+                                        "Tap 3+ points on map in any polygon shape"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                if (mapState.polygonPoints.size >= 3) {
+                                    Text(
+                                        text = "Tap map to add more points or drag dots to adjust",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    text = "Amount (₹450/ac)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = formatInr(mapState.computedAmount),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ForestGreen,
+                                    modifier = Modifier.testTag("selected_area_amount_text")
+                                )
+                            }
+                        }
+                    }
+
+                    if (mapState.polygonPoints.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onUndoPolygonPoint,
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .testTag("panel_undo_point_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Undo,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "Undo Point",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = onClearPolygon,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = AlertRust),
+                                border = BorderStroke(1.dp, AlertRust.copy(alpha = 0.65f)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .testTag("panel_delete_area_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "Delete & Reselect",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+
+                // Scrollable Middle: Save Farm, Payment Method & Policy Notice
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (mapState.polygonPoints.size >= 3) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = mapState.farmNameInput,
+                                onValueChange = onFarmNameChange,
+                                placeholder = { Text("Farm name (e.g. North Plot)") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedButton(
+                                onClick = onSaveFarmToSupabase,
+                                enabled = !mapState.isSavingFarm,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Save,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Save")
+                            }
+                        }
+                    }
+
+                    // Payment Method Selector
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Payment Method",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            PaymentMethod.entries.forEach { method ->
+                                val isSelected = mapState.selectedPaymentMethod == method
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) SoftSage else MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { onSelectPaymentMethod(method) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (method == PaymentMethod.ONLINE) {
+                                                Icons.Rounded.Payments
+                                            } else {
+                                                Icons.Rounded.Agriculture
+                                            },
+                                            contentDescription = null,
+                                            tint = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = method.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Non-Cancellable Policy Notice Card
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = HarvestGoldBg,
+                        border = BorderStroke(1.dp, HarvestAmber.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Lock,
+                                contentDescription = null,
+                                tint = HarvestAmber,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Non-cancellable once booked & paid. Payout to pilot is held safely in escrow and transferred ONLY when you click 'Job Done'.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ForestGreen
+                            )
+                        }
+                    }
+                }
+
+                // Pinned Bottom CTA Booking Button
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Button(
+                        onClick = onConfirmOrder,
+                        enabled = mapState.polygonPoints.size >= 3 && mapState.computedAcres > 0.0,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("farmer_confirm_booking_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.FlightTakeoff,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (mapState.polygonPoints.size < 3) {
+                                "Outline Farmland on Map"
+                            } else {
+                                "Book Spray Service • ${formatInr(mapState.computedAmount)}"
+                            },
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        if (maxWidth >= 720.dp) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                mapPane(Modifier.weight(0.55f).fillMaxHeight())
+                bookingPane(Modifier.weight(0.45f).fillMaxHeight())
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                mapPane(Modifier.fillMaxWidth().weight(0.55f))
+                bookingPane(Modifier.fillMaxWidth().weight(0.45f))
             }
         }
     }
@@ -1192,7 +1369,7 @@ private fun FarmerOrdersTab(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterAlignment,
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(

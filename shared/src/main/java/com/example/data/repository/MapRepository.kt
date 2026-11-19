@@ -193,6 +193,18 @@ class MapRepository(
                     addStringProperty("feature_kind", "boundary_polygon")
                 }
             )
+            features.add(
+                Feature.fromGeometry(LineString.fromLngLats(geoPoints)).apply {
+                    addStringProperty("feature_kind", "boundary_path")
+                }
+            )
+            features.add(
+                Feature.fromGeometry(
+                    LineString.fromLngLats(listOf(geoPoints.last(), geoPoints.first()))
+                ).apply {
+                    addStringProperty("feature_kind", "boundary_closing_line")
+                }
+            )
             val center = GeoPolygonCalculator.calculatePolygonCenter(points)
             if (center != null) {
                 features.add(
@@ -204,7 +216,7 @@ class MapRepository(
         } else if (geoPoints.size == 2) {
             features.add(
                 Feature.fromGeometry(LineString.fromLngLats(geoPoints)).apply {
-                    addStringProperty("feature_kind", "boundary_line")
+                    addStringProperty("feature_kind", "boundary_path")
                 }
             )
         }
@@ -213,6 +225,8 @@ class MapRepository(
             val feat = Feature.fromGeometry(Point.fromLngLat(pt.lng, pt.lat))
             feat.addStringProperty("feature_kind", "vertex_point")
             feat.addNumberProperty("vertex_index", idx + 1)
+            feat.addBooleanProperty("is_first", idx == 0)
+            feat.addBooleanProperty("is_last", idx == points.lastIndex)
             features.add(feat)
         }
         return FeatureCollection.fromFeatures(features)

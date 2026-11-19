@@ -72,6 +72,7 @@ private const val LAYER_BOOKINGS_PIN = "krishivantri-bookings-pin"
 
 private const val LAYER_DRAWING_FILL = "krishivantri-drawing-fill"
 private const val LAYER_DRAWING_LINE = "krishivantri-drawing-line"
+private const val LAYER_DRAWING_CLOSING_LINE = "krishivantri-drawing-closing-line"
 private const val LAYER_DRAWING_VERTICES = "krishivantri-drawing-vertices"
 private const val LAYER_DRAWING_AREA_BADGE = "krishivantri-drawing-area-badge"
 
@@ -181,7 +182,7 @@ fun MapLibreFarmMap(
                 isCompassEnabled = true
                 isAttributionEnabled = true
                 isLogoEnabled = true
-                setAttributionMargins(24, 0, 0, 220)
+                setAttributionMargins(24, 0, 0, 24)
             }
 
             map.cameraPosition = CameraPosition.Builder()
@@ -297,7 +298,7 @@ fun MapLibreFarmMap(
             .fillMaxSize()
             .testTag("maplibre_map_view"),
         factory = {
-            val touchSlopPx = 32f * context.resources.displayMetrics.density
+            val touchSlopPx = 16f * context.resources.displayMetrics.density
             mapView.apply {
                 setOnTouchListener { v, event ->
                     val map = mapLibreMap
@@ -422,7 +423,7 @@ private fun setupCustomGeoJsonLayers(
         )
     }
 
-    // 3. Active Field Boundary Selection (Crisp Red Dashed Outline + Corner Dots + Center Area Pill)
+    // 3. Active Field Boundary Selection (Solid Perimeter Path + Dashed Closing Segment + Corner Dots + Area Pill)
     if (style.getSource(SOURCE_DRAWING) == null) {
         style.addSource(GeoJsonSource(SOURCE_DRAWING, FeatureCollection.fromFeatures(emptyList())))
         style.addLayer(
@@ -430,23 +431,37 @@ private fun setupCustomGeoJsonLayers(
                 .withFilter(Expression.eq(Expression.geometryType(), Expression.literal("Polygon")))
                 .withProperties(
                     PropertyFactory.fillColor("#DC2626"),
-                    PropertyFactory.fillOpacity(0.16f)
+                    PropertyFactory.fillOpacity(0.18f)
                 )
         )
         style.addLayer(
             LineLayer(LAYER_DRAWING_LINE, SOURCE_DRAWING)
                 .withFilter(
-                    Expression.any(
-                        Expression.eq(Expression.geometryType(), Expression.literal("Polygon")),
-                        Expression.eq(Expression.geometryType(), Expression.literal("LineString"))
+                    Expression.all(
+                        Expression.eq(Expression.geometryType(), Expression.literal("LineString")),
+                        Expression.eq(Expression.get("feature_kind"), Expression.literal("boundary_path"))
                     )
                 )
                 .withProperties(
                     PropertyFactory.lineColor("#DC2626"),
                     PropertyFactory.lineWidth(3.5f),
-                    PropertyFactory.lineDasharray(arrayOf(2.5f, 1.5f)),
                     PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                )
+        )
+        style.addLayer(
+            LineLayer(LAYER_DRAWING_CLOSING_LINE, SOURCE_DRAWING)
+                .withFilter(
+                    Expression.all(
+                        Expression.eq(Expression.geometryType(), Expression.literal("LineString")),
+                        Expression.eq(Expression.get("feature_kind"), Expression.literal("boundary_closing_line"))
+                    )
+                )
+                .withProperties(
+                    PropertyFactory.lineColor("#DC2626"),
+                    PropertyFactory.lineWidth(2.6f),
+                    PropertyFactory.lineDasharray(arrayOf(2.5f, 1.5f)),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND)
                 )
         )
         style.addLayer(
@@ -458,9 +473,21 @@ private fun setupCustomGeoJsonLayers(
                     )
                 )
                 .withProperties(
-                    PropertyFactory.circleRadius(8.5f),
-                    PropertyFactory.circleColor("#DC2626"),
-                    PropertyFactory.circleStrokeWidth(2.0f),
+                    PropertyFactory.circleRadius(
+                        Expression.switchCase(
+                            Expression.eq(Expression.get("is_last"), Expression.literal(true)),
+                            Expression.literal(9.5f),
+                            Expression.literal(7.5f)
+                        )
+                    ),
+                    PropertyFactory.circleColor(
+                        Expression.switchCase(
+                            Expression.eq(Expression.get("is_first"), Expression.literal(true)),
+                            Expression.literal("#059669"),
+                            Expression.literal("#DC2626")
+                        )
+                    ),
+                    PropertyFactory.circleStrokeWidth(2.2f),
                     PropertyFactory.circleStrokeColor("#FFFFFF")
                 )
         )
