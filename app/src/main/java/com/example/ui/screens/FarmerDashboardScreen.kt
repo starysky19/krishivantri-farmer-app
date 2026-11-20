@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Eco
+import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.FlightTakeoff
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
@@ -335,14 +336,14 @@ fun FarmerDashboardScreen(
                         )
                     }
 
-                    // Sign Out
+                    // Log Out
                     IconButton(
                         onClick = onSignOut,
                         modifier = Modifier.testTag("farmer_signout_button")
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.Logout,
-                            contentDescription = "Sign Out",
+                            contentDescription = "Log Out",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -2056,6 +2057,11 @@ private fun FarmerAccountTab(
                         value = user.name
                     )
                     CredentialRow(
+                        icon = Icons.Rounded.Email,
+                        label = "Email Address",
+                        value = user.email.ifBlank { "Not linked" }
+                    )
+                    CredentialRow(
                         icon = Icons.Rounded.Phone,
                         label = "Mobile Number",
                         value = user.phone
@@ -2177,7 +2183,7 @@ private fun FarmerAccountTab(
             }
         }
 
-        // Sign Out Button
+        // Log Out Button
         Button(
             onClick = onSignOut,
             colors = ButtonDefaults.buttonColors(containerColor = AlertRust),
@@ -2185,6 +2191,7 @@ private fun FarmerAccountTab(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
+                .testTag("farmer_logout_button")
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.Logout,
@@ -2192,7 +2199,7 @@ private fun FarmerAccountTab(
                 modifier = Modifier.size(18.dp)
             )
             Spacer(Modifier.width(8.dp))
-            Text("Sign Out from Farmer Account")
+            Text("Log Out")
         }
     }
 }

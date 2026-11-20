@@ -7,10 +7,13 @@ create extension if not exists "uuid-ossp";
 create table if not exists public.users (
     id text primary key,
     phone text unique not null,
+    email text unique,
     name text not null,
     role text not null check (role in ('admin', 'pilot', 'farmer')),
     created_at bigint not null default (extract(epoch from now()) * 1000)::bigint
 );
+
+alter table public.users add column if not exists email text unique;
 
 create table if not exists public.farmer_profiles (
     user_id text primary key references public.users(id) on delete cascade,

@@ -1,11 +1,24 @@
+from datetime import timedelta
+from email.message import EmailMessage
 import math
+import secrets
+import smtplib
 from decimal import Decimal, ROUND_HALF_UP
 import razorpay
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
 from django.db.models import F
+from django.utils import timezone
 
-from .models import CommissionLog, Order, PilotProfile
+from .models import (
+    CommissionLog,
+    CustomUser,
+    EmailOtpChallenge,
+    Order,
+    PilotProfile,
+    SmtpConfiguration,
+)
 
 TARIFF_PER_ACRE = Decimal("450.00")
 COMMISSION_RATE = Decimal("0.10")
@@ -164,3 +177,123 @@ def confirm_job_done_atomic(order_id, farmer_id=None) -> tuple[bool, str, Order 
 
 def complete_order_atomic(order_id) -> Order:
     return pilot_finish_spraying_atomic(order_id)
+
+
+OTP_EXPIRY_MINUTES = 5
+OTP_RESEND_COOLDOWN_SECONDS = 60
+OTP_MAX_REQUESTS_PER_WINDOW = 5
+OTP_REQUEST_WINDOW_MINUTES = 15
+OTP_MAX_VERIFY_ATTEMPTS = 5
+
+
+def _send_otp_via_db_smtp(recipient_email: str, otp_code: str) -> None:
+    smtp_cfg = SmtpConfiguration.objects.filter(is_active=True).order_by("-updated_at").first()
+    if not smtp_cfg:
+        raise RuntimeError("Active SMTP configuration is not set in the database.")
+
+    msg = EmailMessage()
+    msg["Subject"] = "Your NexusTekFusion Krishivantri 6-Digit Login OTP"
+    msg["From"] = f"{smtp_cfg.sender_name} <{smtp_cfg.host_email}>"
+    msg["To"] = recipient_email
+    msg.set_content(
+        f"Your 6-digit login verification code is: {otp_code}\n\n"
+        f"Enter this 6-digit OTP in the Krishivantri app. It expires in {OTP_EXPIRY_MINUTES} minutes.\n"
+        "Do not share this code with anyone.\n\n"
+        "— NexusTekFusion Team"
+    )
+
+    if smtp_cfg.use_ssl:
+        with smtplib.SMTP_SSL(smtp_cfg.smtp_host, smtp_cfg.smtp_port, timeout=15) as server:
+            server.login(smtp_cfg.host_email, smtp_cfg.smtp_password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(smtp_cfg.smtp_host, smtp_cfg.smtp_port, timeout=15) as server:
+            if smtp_cfg.use_tls:
+                server.starttls()
+            server.login(smtp_cfg.host_email, smtp_cfg.smtp_password)
+            server.send_message(msg)
+
+
+def request_email_otp_service(email: str) -> tuple[bool, int, str]:
+    """
+    Generates a hashed 6-digit OTP, stores it with 5-minute expiry and 60s cooldown,
+    and sends it using the active DB SmtpConfiguration.
+    Returns (ok, status_code, message) without revealing whether email is registered.
+    """
+    clean_email = email.strip().lower()
+    now = timezone.now()
+    window_start = now - timedelta(minutes=OTP_REQUEST_WINDOW_MINUTES)
+
+    recent_count = EmailOtpChallenge.objects.filter(
+        email=clean_email,
+        created_at__gte=window_start,
+    ).count()
+    if recent_count >= OTP_MAX_REQUESTS_PER_WINDOW:
+        return False, 429, "Too many OTP requests. Please try again later."
+
+    latest = EmailOtpChallenge.objects.filter(email=clean_email, is_used=False).first()
+    if latest and latest.resend_available_at > now:
+        wait_sec = max(1, int((latest.resend_available_at - now).total_seconds()))
+        return False, 429, f"Please wait {wait_sec} seconds before requesting a new OTP."
+
+    user_exists = CustomUser.objects.filter(email__iexact=clean_email, is_active=True).exists()
+    otp_code = str(secrets.randbelow(900000) + 100000)
+
+    with transaction.atomic():
+        EmailOtpChallenge.objects.filter(email=clean_email, is_used=False).update(is_used=True)
+        challenge = EmailOtpChallenge.objects.create(
+            email=clean_email,
+            otp_hash=make_password(otp_code),
+            expires_at=now + timedelta(minutes=OTP_EXPIRY_MINUTES),
+            resend_available_at=now + timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS),
+        )
+
+    if user_exists:
+        try:
+            _send_otp_via_db_smtp(clean_email, otp_code)
+        except Exception:
+            challenge.is_used = True
+            challenge.save(update_fields=["is_used"])
+            return False, 503, "Unable to deliver OTP email right now. Please try again shortly."
+
+    return True, 200, "If an account exists for this email, a 6-digit OTP has been sent. It expires in 5 minutes."
+
+
+def verify_email_otp_service(email: str, otp: str) -> tuple[bool, CustomUser | None, str]:
+    clean_email = email.strip().lower()
+    clean_otp = otp.strip()
+    if len(clean_otp) != 6 or not clean_otp.isdigit():
+        return False, None, "Enter a valid 6-digit OTP."
+    now = timezone.now()
+
+    with transaction.atomic():
+        challenge = (
+            EmailOtpChallenge.objects.select_for_update()
+            .filter(email=clean_email, is_used=False)
+            .order_by("-created_at")
+            .first()
+        )
+        if not challenge or challenge.expires_at < now:
+            return False, None, "Invalid or expired OTP."
+
+        if challenge.attempts_count >= OTP_MAX_VERIFY_ATTEMPTS:
+            challenge.is_used = True
+            challenge.save(update_fields=["is_used"])
+            return False, None, "Too many failed verification attempts. Please request a new OTP."
+
+        if not check_password(clean_otp, challenge.otp_hash):
+            challenge.attempts_count += 1
+            if challenge.attempts_count >= OTP_MAX_VERIFY_ATTEMPTS:
+                challenge.is_used = True
+                challenge.save(update_fields=["attempts_count", "is_used"])
+            else:
+                challenge.save(update_fields=["attempts_count"])
+            return False, None, "Invalid or expired OTP."
+
+        challenge.is_used = True
+        challenge.save(update_fields=["is_used"])
+
+    user = CustomUser.objects.filter(email__iexact=clean_email, is_active=True).first()
+    if not user:
+        return False, None, "Invalid or expired OTP."
+    return True, user, "Verified."

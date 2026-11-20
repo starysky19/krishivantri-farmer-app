@@ -1,12 +1,20 @@
 from django.contrib import admin
-from .models import CommissionLog, CustomUser, FarmerProfile, Order, PilotProfile
+from .models import (
+    CommissionLog,
+    CustomUser,
+    EmailOtpChallenge,
+    FarmerProfile,
+    Order,
+    PilotProfile,
+    SmtpConfiguration,
+)
 
 
 @admin.register(CustomUser)
 class CustomUserAdmin(admin.ModelAdmin):
-    list_display = ("name", "phone", "role", "created_at")
+    list_display = ("name", "email", "phone", "role", "created_at")
     list_filter = ("role",)
-    search_fields = ("name", "phone")
+    search_fields = ("name", "email", "phone")
 
 
 @admin.register(PilotProfile)
@@ -29,3 +37,16 @@ class OrderAdmin(admin.ModelAdmin):
 @admin.register(CommissionLog)
 class CommissionLogAdmin(admin.ModelAdmin):
     list_display = ("order", "pilot", "amount", "payment_method", "created_at")
+
+
+@admin.register(SmtpConfiguration)
+class SmtpConfigurationAdmin(admin.ModelAdmin):
+    list_display = ("host_email", "smtp_host", "smtp_port", "use_tls", "use_ssl", "is_active", "updated_at")
+    list_filter = ("is_active", "use_tls", "use_ssl")
+
+
+@admin.register(EmailOtpChallenge)
+class EmailOtpChallengeAdmin(admin.ModelAdmin):
+    list_display = ("email", "attempts_count", "is_used", "expires_at", "created_at")
+    list_filter = ("is_used",)
+    readonly_fields = ("otp_hash", "created_at")

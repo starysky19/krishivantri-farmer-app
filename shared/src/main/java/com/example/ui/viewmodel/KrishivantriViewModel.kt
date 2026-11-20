@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.KrishivantriDatabase
+import com.example.data.local.PersistentAuthSessionStore
 import com.example.data.model.CommissionLogEntity
 import com.example.data.model.DailyOrderVolume
 import com.example.data.model.DroneType
@@ -27,11 +28,14 @@ import com.example.data.model.UserRole
 import com.example.data.remote.SupabaseConnectionStatus
 import com.example.data.repository.AcceptOrderResult
 import com.example.data.repository.AuthResult
+import com.example.data.repository.EmailAuthResult
+import com.example.data.repository.EmailOtpAuthRepository
 import com.example.data.repository.FarmRepository
 import com.example.data.repository.JobDoneResult
 import com.example.data.repository.KrishivantriRepository
 import com.example.data.repository.LocationRepository
 import com.example.data.repository.MapRepository
+import com.example.data.repository.OtpRequestResult
 import com.example.domain.GeoPolygonCalculator
 import com.example.domain.LocationMatch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -71,7 +75,14 @@ data class InsufficientWalletAlert(
 
 data class AuthUiState(
     val selectedRole: UserRole = UserRole.FARMER,
-    val isSignUpMode: Boolean = true,
+    val isSignUpMode: Boolean = false,
+    val isRestoringSession: Boolean = true,
+    val otpRequestedEmail: String? = null,
+    val otpInfoMessage: String? = null,
+    val otpResendCooldownSeconds: Int = 0,
+    val otpExpiresInSeconds: Int = 0,
+    val otpFailedAttempts: Int = 0,
+    val maxOtpAttempts: Int = EmailOtpAuthRepository.MAX_OTP_ATTEMPTS,
     val errorMessage: String? = null,
     val isLoading: Boolean = false
 )
@@ -116,6 +127,8 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     private val database = KrishivantriDatabase.getInstance(application)
     private val repository = KrishivantriRepository(database)
+    private val sessionStore = PersistentAuthSessionStore(application)
+    val emailAuthRepository = EmailOtpAuthRepository(database, sessionStore)
     val locationRepository = LocationRepository(application)
     val farmRepository = FarmRepository(database.dao())
     val mapRepository = MapRepository(application, database.dao())
@@ -147,13 +160,33 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     private var pilotLiveLocationJob: Job? = null
     private var farmerSupabaseSyncJob: Job? = null
     private var marketSupabaseSyncJob: Job? = null
+    private var otpCountdownJob: Job? = null
+    private val otpRequestHistoryMillis = mutableListOf<Long>()
 
     init {
         viewModelScope.launch {
             runCatching { repository.ensureAdminSeeded() }
             refreshOfflineRegions()
+            restorePersistentSessionOnLaunch()
         }
         checkDatabaseConnection()
+    }
+
+    private suspend fun restorePersistentSessionOnLaunch() {
+        val restored = runCatching { emailAuthRepository.restorePersistentSession() }.getOrNull()
+        if (restored is EmailAuthResult.Success) {
+            _currentUser.value = restored.user
+            _mapBookingState.value = MapBookingState(
+                hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
+                offlineRegions = _mapBookingState.value.offlineRegions
+            )
+            if (restored.user.role == UserRole.FARMER.apiValue) {
+                startFarmerSupabaseSync(restored.user.id)
+            } else if (restored.user.role == UserRole.ADMIN.apiValue) {
+                startMarketSupabaseSync()
+            }
+        }
+        _authState.update { it.copy(isRestoringSession = false) }
     }
 
     fun checkDatabaseConnection(announceResult: Boolean = false) {
@@ -301,31 +334,40 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun toggleAuthMode(isSignUp: Boolean) {
-        _authState.update { it.copy(isSignUpMode = isSignUp, errorMessage = null) }
+        otpCountdownJob?.cancel()
+        otpCountdownJob = null
+        _authState.update {
+            it.copy(
+                isSignUpMode = isSignUp,
+                otpRequestedEmail = null,
+                otpInfoMessage = null,
+                otpResendCooldownSeconds = 0,
+                otpExpiresInSeconds = 0,
+                otpFailedAttempts = 0,
+                errorMessage = null
+            )
+        }
     }
 
-    fun submitFarmerAuth(name: String, phone: String, farmerId: String) {
-        val isSignUp = _authState.value.isSignUpMode
-        if (phone.trim().length < 10) {
-            _authState.update { it.copy(errorMessage = "Enter a valid 10-digit mobile number.") }
-            return
-        }
-        if (isSignUp && (name.isBlank() || farmerId.isBlank())) {
-            _authState.update { it.copy(errorMessage = "Enter your full name and Farmer ID.") }
-            return
-        }
-
+    fun registerFarmerWithEmail(
+        name: String,
+        email: String,
+        phone: String,
+        farmerId: String
+    ) {
         viewModelScope.launch {
             _authState.update { it.copy(isLoading = true, errorMessage = null) }
-            val result = if (isSignUp) {
-                repository.registerFarmer(name, phone, farmerId)
-            } else {
-                repository.loginByRole(phone, UserRole.FARMER)
-            }
-            when (result) {
-                is AuthResult.Success -> {
+            when (val result = emailAuthRepository.registerFarmerWithEmail(name, email, phone, farmerId)) {
+                is EmailAuthResult.Success -> {
                     _currentUser.value = result.user
-                    _authState.update { it.copy(isLoading = false) }
+                    _authState.update {
+                        it.copy(
+                            isLoading = false,
+                            otpRequestedEmail = null,
+                            otpInfoMessage = null,
+                            errorMessage = null
+                        )
+                    }
                     _mapBookingState.value = MapBookingState(
                         hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
                         offlineRegions = _mapBookingState.value.offlineRegions
@@ -334,8 +376,163 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                         startFarmerSupabaseSync(result.user.id)
                     }
                 }
-                is AuthResult.Error -> {
+                is EmailAuthResult.Error -> {
                     _authState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun requestLoginOtp(email: String) {
+        val cleanEmail = EmailOtpAuthRepository.normalizeEmail(email)
+        val currentState = _authState.value
+        if (currentState.otpRequestedEmail == cleanEmail && currentState.otpResendCooldownSeconds > 0) {
+            _authState.update {
+                it.copy(
+                    errorMessage = "Please wait ${currentState.otpResendCooldownSeconds}s before requesting a new OTP."
+                )
+            }
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        otpRequestHistoryMillis.removeAll { now - it > 15 * 60 * 1000L }
+        if (otpRequestHistoryMillis.size >= 5) {
+            _authState.update {
+                it.copy(errorMessage = "Too many OTP requests. Please wait a few minutes and try again.")
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _authState.update { it.copy(isLoading = true, errorMessage = null) }
+            when (val result = emailAuthRepository.requestLoginOtp(cleanEmail)) {
+                is OtpRequestResult.Sent -> {
+                    otpRequestHistoryMillis.add(System.currentTimeMillis())
+                    _authState.update {
+                        it.copy(
+                            isLoading = false,
+                            otpRequestedEmail = cleanEmail,
+                            otpInfoMessage = result.message,
+                            otpResendCooldownSeconds = result.cooldownSeconds,
+                            otpExpiresInSeconds = result.expiresInSeconds,
+                            otpFailedAttempts = 0,
+                            errorMessage = null
+                        )
+                    }
+                    startOtpCountdowns()
+                }
+                is OtpRequestResult.RateLimited -> {
+                    _authState.update {
+                        it.copy(
+                            isLoading = false,
+                            otpResendCooldownSeconds = result.cooldownSeconds,
+                            errorMessage = result.message
+                        )
+                    }
+                    startOtpCountdowns()
+                }
+                is OtpRequestResult.Error -> {
+                    _authState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun verifyLoginOtp(otp: String) {
+        val state = _authState.value
+        val targetEmail = state.otpRequestedEmail
+        if (targetEmail.isNullOrBlank()) {
+            _authState.update { it.copy(errorMessage = "Request an OTP first.") }
+            return
+        }
+        if (state.otpExpiresInSeconds <= 0) {
+            _authState.update {
+                it.copy(errorMessage = "This OTP has expired after 5 minutes. Please request a new OTP.")
+            }
+            return
+        }
+        if (state.otpFailedAttempts >= state.maxOtpAttempts) {
+            _authState.update {
+                it.copy(errorMessage = "Maximum verification attempts reached. Please request a new OTP.")
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _authState.update { it.copy(isLoading = true, errorMessage = null) }
+            when (val result = emailAuthRepository.verifyLoginOtp(targetEmail, otp)) {
+                is EmailAuthResult.Success -> {
+                    otpCountdownJob?.cancel()
+                    otpCountdownJob = null
+                    _currentUser.value = result.user
+                    _authState.update {
+                        it.copy(
+                            isLoading = false,
+                            otpRequestedEmail = null,
+                            otpInfoMessage = null,
+                            otpResendCooldownSeconds = 0,
+                            otpExpiresInSeconds = 0,
+                            otpFailedAttempts = 0,
+                            errorMessage = null
+                        )
+                    }
+                    _mapBookingState.value = MapBookingState(
+                        hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
+                        offlineRegions = _mapBookingState.value.offlineRegions
+                    )
+                    if (result.user.role == UserRole.FARMER.apiValue) {
+                        startFarmerSupabaseSync(result.user.id)
+                    }
+                }
+                is EmailAuthResult.Error -> {
+                    val nextFailed = _authState.value.otpFailedAttempts + 1
+                    val lockedMsg = if (nextFailed >= _authState.value.maxOtpAttempts) {
+                        "Maximum verification attempts reached. Please request a new OTP."
+                    } else {
+                        result.message
+                    }
+                    _authState.update {
+                        it.copy(
+                            isLoading = false,
+                            otpFailedAttempts = nextFailed,
+                            errorMessage = lockedMsg
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun editLoginEmail() {
+        otpCountdownJob?.cancel()
+        otpCountdownJob = null
+        _authState.update {
+            it.copy(
+                otpRequestedEmail = null,
+                otpInfoMessage = null,
+                otpResendCooldownSeconds = 0,
+                otpExpiresInSeconds = 0,
+                otpFailedAttempts = 0,
+                errorMessage = null
+            )
+        }
+    }
+
+    private fun startOtpCountdowns() {
+        otpCountdownJob?.cancel()
+        otpCountdownJob = viewModelScope.launch {
+            while (true) {
+                val cur = _authState.value
+                if (cur.otpResendCooldownSeconds <= 0 && cur.otpExpiresInSeconds <= 0) {
+                    break
+                }
+                kotlinx.coroutines.delay(1000L)
+                _authState.update { st ->
+                    st.copy(
+                        otpResendCooldownSeconds = (st.otpResendCooldownSeconds - 1).coerceAtLeast(0),
+                        otpExpiresInSeconds = (st.otpExpiresInSeconds - 1).coerceAtLeast(0)
+                    )
                 }
             }
         }
@@ -450,7 +647,19 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         farmerSupabaseSyncJob = null
         marketSupabaseSyncJob?.cancel()
         marketSupabaseSyncJob = null
+        otpCountdownJob?.cancel()
+        otpCountdownJob = null
+        val previousToken = sessionStore.loadSession()?.accessToken
+        sessionStore.clearSession()
+        viewModelScope.launch {
+            emailAuthRepository.revokeAccessToken(previousToken)
+        }
         _currentUser.value = null
+        _authState.value = AuthUiState(
+            selectedRole = UserRole.FARMER,
+            isSignUpMode = false,
+            isRestoringSession = false
+        )
         _mapBookingState.value = MapBookingState(
             hasLocationPermission = locationRepository.hasFineOrCoarsePermission()
         )

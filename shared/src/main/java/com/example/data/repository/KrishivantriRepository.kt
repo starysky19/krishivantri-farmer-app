@@ -38,6 +38,7 @@ import com.example.data.remote.SupabasePilotProfileDto
 import com.example.data.remote.SupabasePilotRatingPatchDto
 import com.example.data.remote.SupabasePilotWalletPatchDto
 import com.example.data.remote.SupabaseUserDto
+import com.example.data.remote.SupabaseUserLegacyDto
 import com.example.data.remote.SupabaseUserNamePatchDto
 import com.example.data.remote.SupabaseUserPatchDto
 import com.example.domain.GeoPolygonCalculator
@@ -140,15 +141,26 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         withContext(Dispatchers.IO) {
             runCatching {
                 SupabaseClient.api?.let { api ->
-                    api.upsertUser(
-                        SupabaseUserDto(
-                            id = user.id,
-                            phone = user.phone,
-                            name = user.name,
-                            role = user.role,
-                            created_at = user.createdAt
-                        )
+                    val dto = SupabaseUserDto(
+                        id = user.id,
+                        phone = user.phone,
+                        name = user.name,
+                        role = user.role,
+                        created_at = user.createdAt,
+                        email = user.email.ifBlank { null }
                     )
+                    val resp = api.upsertUser(dto)
+                    if (!resp.isSuccessful) {
+                        api.upsertUserLegacy(
+                            SupabaseUserLegacyDto(
+                                id = user.id,
+                                phone = user.phone,
+                                name = user.name,
+                                role = user.role,
+                                created_at = user.createdAt
+                            )
+                        )
+                    }
                     api.upsertFarmerProfile(
                         SupabaseFarmerProfileDto(
                             user_id = profile.userId,
@@ -247,6 +259,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                         phone = remoteUser.phone,
                         name = remoteUser.name,
                         role = remoteUser.role,
+                        email = remoteUser.email.orEmpty(),
                         createdAt = remoteUser.created_at
                     )
                     dao.insertUser(entity)
@@ -368,15 +381,26 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                         body = SupabaseUserPatchDto(name = updatedUser.name, phone = updatedUser.phone)
                     )
                     if (!patchUserResp.isSuccessful || patchUserResp.body().isNullOrEmpty()) {
-                        api.upsertUser(
-                            SupabaseUserDto(
-                                id = updatedUser.id,
-                                phone = updatedUser.phone,
-                                name = updatedUser.name,
-                                role = updatedUser.role,
-                                created_at = updatedUser.createdAt
-                            )
+                        val dto = SupabaseUserDto(
+                            id = updatedUser.id,
+                            phone = updatedUser.phone,
+                            name = updatedUser.name,
+                            role = updatedUser.role,
+                            created_at = updatedUser.createdAt,
+                            email = updatedUser.email.ifBlank { null }
                         )
+                        val upsertResp = api.upsertUser(dto)
+                        if (!upsertResp.isSuccessful) {
+                            api.upsertUserLegacy(
+                                SupabaseUserLegacyDto(
+                                    id = updatedUser.id,
+                                    phone = updatedUser.phone,
+                                    name = updatedUser.name,
+                                    role = updatedUser.role,
+                                    created_at = updatedUser.createdAt
+                                )
+                            )
+                        }
                     }
                     val patchProfResp = api.patchFarmerIdNumber(
                         userIdFilter = "eq.$userId",
@@ -603,15 +627,32 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
             val remoteUser = api.getUsersById("eq.$farmerId").body()?.firstOrNull()
             if (remoteUser == null) {
                 dao.getUserById(farmerId)?.let { localUser ->
-                    api.upsertUser(
-                        SupabaseUserDto(
-                            id = localUser.id,
-                            phone = localUser.phone,
-                            name = localUser.name,
-                            role = localUser.role,
-                            created_at = localUser.createdAt
-                        )
+                    val dto = SupabaseUserDto(
+                        id = localUser.id,
+                        phone = localUser.phone,
+                        name = localUser.name,
+                        role = localUser.role,
+                        created_at = localUser.createdAt,
+                        email = localUser.email.ifBlank { null }
                     )
+                    val resp = api.upsertUser(dto)
+                    if (!resp.isSuccessful) {
+                        api.upsertUserLegacy(
+                            SupabaseUserLegacyDto(
+                                id = localUser.id,
+                                phone = localUser.phone,
+                                name = localUser.name,
+                                role = localUser.role,
+                                created_at = localUser.createdAt
+                            )
+                        )
+                    }
+                }
+            } else if (!remoteUser.email.isNullOrBlank()) {
+                dao.getUserById(farmerId)?.let { localUser ->
+                    if (localUser.email.isBlank()) {
+                        dao.insertUser(localUser.copy(email = remoteUser.email.trim().lowercase(Locale.ROOT)))
+                    }
                 }
             }
             val remoteProfile = api.getFarmerProfile("eq.$farmerId").body()?.firstOrNull()
@@ -688,6 +729,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                                 phone = pu.phone,
                                 name = pu.name,
                                 role = pu.role,
+                                email = pu.email.orEmpty(),
                                 createdAt = pu.created_at
                             )
                         )
@@ -1248,6 +1290,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                         phone = u.phone,
                         name = u.name,
                         role = u.role,
+                        email = u.email.orEmpty(),
                         createdAt = u.created_at
                     )
                 )

@@ -5,7 +5,7 @@ from .models import CommissionLog, CustomUser, FarmerProfile, Order, PilotProfil
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ["id", "phone", "name", "role", "created_at"]
+        fields = ["id", "phone", "email", "name", "role", "created_at"]
 
 
 class PilotProfileSerializer(serializers.ModelSerializer):

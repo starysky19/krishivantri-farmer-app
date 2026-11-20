@@ -4,6 +4,10 @@ from . import views
 urlpatterns = [
     path("auth/pilot/register/", views.register_pilot, name="register_pilot"),
     path("auth/farmer/register/", views.register_farmer, name="register_farmer"),
+    path("auth/otp/request/", views.request_email_otp, name="request_email_otp"),
+    path("auth/otp/verify/", views.verify_email_otp_login, name="verify_email_otp_login"),
+    path("auth/session/", views.session_status, name="session_status"),
+    path("auth/logout/", views.logout_view, name="logout"),
     path("auth/login/", views.login_view, name="login"),
     path("farmer/orders/", views.farmer_orders, name="farmer_orders"),
     path("farmer/orders/<uuid:order_id>/rate/", views.rate_pilot, name="rate_pilot"),

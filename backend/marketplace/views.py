@@ -1,4 +1,6 @@
 from decimal import Decimal
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
@@ -22,6 +24,8 @@ from .services import (
     compute_pilot_priority_score,
     confirm_job_done_atomic,
     create_razorpay_order,
+    request_email_otp_service,
+    verify_email_otp_service,
 )
 
 
@@ -39,12 +43,21 @@ class IsKrishivantriAdmin(permissions.BasePermission):
 def register_pilot(request):
     data = request.data
     phone = data.get("phone", "").strip()
+    email = data.get("email", "").strip().lower() or None
+    if email:
+        try:
+            validate_email(email)
+        except ValidationError:
+            return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+        if CustomUser.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "Email already registered."}, status=status.HTTP_400_BAD_REQUEST)
     if CustomUser.objects.filter(phone=phone).exists():
         return Response({"detail": "Phone already registered."}, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
         user = CustomUser.objects.create_user(
             phone=phone,
+            email=email,
             name=data.get("name", ""),
             role="pilot",
         )
@@ -58,7 +71,14 @@ def register_pilot(request):
         )
         token, _ = Token.objects.get_or_create(user=user)
     return Response(
-        {"user_id": str(user.id), "name": user.name, "phone": user.phone, "role": user.role, "token": token.key},
+        {
+            "user_id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role,
+            "token": token.key,
+        },
         status=status.HTTP_201_CREATED,
     )
 
@@ -67,25 +87,119 @@ def register_pilot(request):
 @permission_classes([permissions.AllowAny])
 def register_farmer(request):
     data = request.data
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip().lower()
     phone = data.get("phone", "").strip()
+    farmer_id_number = data.get("farmer_id_number", "").strip().upper()
+
+    if not name:
+        return Response({"detail": "Full name is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not email:
+        return Response({"detail": "Email address is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+    if len(phone) < 10:
+        return Response({"detail": "Valid mobile number is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not farmer_id_number:
+        return Response({"detail": "Farmer ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if CustomUser.objects.filter(email__iexact=email).exists():
+        return Response({"detail": "Email address is already registered."}, status=status.HTTP_400_BAD_REQUEST)
     if CustomUser.objects.filter(phone=phone).exists():
         return Response({"detail": "Phone already registered."}, status=status.HTTP_400_BAD_REQUEST)
+    if FarmerProfile.objects.filter(farmer_id_number=farmer_id_number).exists():
+        return Response({"detail": "Farmer ID is already registered."}, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
         user = CustomUser.objects.create_user(
             phone=phone,
-            name=data.get("name", ""),
+            email=email,
+            name=name,
             role="farmer",
         )
         FarmerProfile.objects.create(
             user=user,
-            farmer_id_number=data.get("farmer_id_number", "").strip().upper(),
+            farmer_id_number=farmer_id_number,
         )
         token, _ = Token.objects.get_or_create(user=user)
     return Response(
-        {"user_id": str(user.id), "name": user.name, "phone": user.phone, "role": user.role, "token": token.key},
+        {
+            "user_id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role,
+            "token": token.key,
+        },
         status=status.HTTP_201_CREATED,
     )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def request_email_otp(request):
+    email = request.data.get("email", "").strip().lower()
+    if not email:
+        return Response({"detail": "Email address is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+
+    ok, code, message = request_email_otp_service(email)
+    return Response({"detail": message, "cooldown_seconds": 60, "expires_in_seconds": 300}, status=code)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def verify_email_otp_login(request):
+    email = request.data.get("email", "").strip().lower()
+    otp = request.data.get("otp", "").strip()
+    if not email or not otp:
+        return Response({"detail": "Email address and OTP are required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+
+    ok, user, message = verify_email_otp_service(email, otp)
+    if not ok or not user:
+        return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response(
+        {
+            "user_id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role,
+            "token": token.key,
+        }
+    )
+
+
+@api_view(["GET"])
+def session_status(request):
+    user = request.user
+    return Response(
+        {
+            "authenticated": True,
+            "user_id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role,
+        }
+    )
+
+
+@api_view(["POST"])
+def logout_view(request):
+    Token.objects.filter(user=request.user).delete()
+    return Response({"detail": "Logged out successfully."})
 
 
 @api_view(["POST"])
@@ -102,7 +216,7 @@ def login_view(request):
             return Response({"detail": "Invalid admin credentials."}, status=status.HTTP_401_UNAUTHORIZED)
     token, _ = Token.objects.get_or_create(user=user)
     return Response(
-        {"user_id": str(user.id), "name": user.name, "phone": user.phone, "role": user.role, "token": token.key}
+        {"user_id": str(user.id), "name": user.name, "email": user.email, "phone": user.phone, "role": user.role, "token": token.key}
     )
 
 

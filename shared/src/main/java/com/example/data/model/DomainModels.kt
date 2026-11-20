@@ -67,7 +67,19 @@ data class UserEntity(
     val phone: String,
     val name: String,
     val role: String, // 'admin', 'pilot', 'farmer'
+    val email: String = "",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@JsonClass(generateAdapter = true)
+data class AuthSession(
+    val userId: String,
+    val email: String,
+    val role: String,
+    val accessToken: String,
+    val refreshToken: String = "",
+    val expiresAtEpochSec: Long = 0L,
+    val issuedAtMillis: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "pilot_profiles")

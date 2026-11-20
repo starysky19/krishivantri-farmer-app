@@ -5,21 +5,29 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.UserRole
 import com.example.data.remote.KrishivantriRuntimeConfig
+import com.example.ui.components.KrishivantriBrandMark
 import com.example.ui.components.RazorpayCheckoutSheet
 import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.AuthScreen
@@ -146,12 +154,38 @@ fun KrishivantriApp(
         ) {
             val user = currentUser
             if (user == null) {
-                AuthScreen(
-                    state = authState,
-                    onToggleSignUp = viewModel::toggleAuthMode,
-                    onSubmitFarmer = viewModel::submitFarmerAuth,
-                    onSubmitAdmin = viewModel::submitAdminLogin
-                )
+                if (authState.isRestoringSession) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            KrishivantriBrandMark(
+                                title = "Krishivantri",
+                                subtitle = "NexusTekFusion • Farmer Portal"
+                            )
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = "Restoring your session…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    AuthScreen(
+                        state = authState,
+                        onToggleSignUp = viewModel::toggleAuthMode,
+                        onRegisterFarmer = viewModel::registerFarmerWithEmail,
+                        onRequestLoginOtp = viewModel::requestLoginOtp,
+                        onVerifyLoginOtp = viewModel::verifyLoginOtp,
+                        onEditLoginEmail = viewModel::editLoginEmail,
+                        onSubmitAdmin = viewModel::submitAdminLogin
+                    )
+                }
             } else {
                 when (UserRole.fromApi(user.role)) {
                     UserRole.ADMIN -> AdminDashboardScreen(

@@ -13,6 +13,7 @@ import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.Headers
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -21,6 +22,16 @@ import java.util.concurrent.TimeUnit
 
 @JsonClass(generateAdapter = true)
 data class SupabaseUserDto(
+    val id: String,
+    val phone: String,
+    val name: String,
+    val role: String,
+    val created_at: Long,
+    val email: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseUserLegacyDto(
     val id: String,
     val phone: String,
     val name: String,
@@ -215,8 +226,15 @@ interface SupabasePostgrestApi {
     @POST("rest/v1/users")
     suspend fun upsertUser(@Body body: SupabaseUserDto): Response<List<SupabaseUserDto>>
 
+    @Headers("Prefer: resolution=merge-duplicates,return=representation")
+    @POST("rest/v1/users")
+    suspend fun upsertUserLegacy(@Body body: SupabaseUserLegacyDto): Response<List<SupabaseUserLegacyDto>>
+
     @GET("rest/v1/users?select=*")
     suspend fun getUsersByPhone(@Query("phone") phoneFilter: String): Response<List<SupabaseUserDto>>
+
+    @GET("rest/v1/users?select=*")
+    suspend fun getUsersByEmail(@Query("email") emailFilter: String): Response<List<SupabaseUserDto>>
 
     @GET("rest/v1/users?select=*")
     suspend fun getUsersById(@Query("id") idFilter: String): Response<List<SupabaseUserDto>>
@@ -385,6 +403,78 @@ interface SupabasePostgrestApi {
     ): Response<List<SupabaseOperatorLocationDto>>
 }
 
+@JsonClass(generateAdapter = true)
+data class SupabaseAuthSignUpRequest(
+    val email: String,
+    val password: String,
+    val data: Map<String, String> = emptyMap()
+)
+
+/**
+ * Intentionally omits email_redirect_to / code_challenge so Supabase Auth
+ * generates a 6-digit numeric OTP token ({{ .Token }}) instead of a redirect/PKCE link.
+ */
+@JsonClass(generateAdapter = true)
+data class SupabaseOtpRequest(
+    val email: String,
+    val create_user: Boolean = false
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseVerifyOtpRequest(
+    val email: String,
+    val token: String,
+    val type: String = "email"
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseRefreshTokenRequest(
+    val refresh_token: String
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseAuthUserDto(
+    val id: String,
+    val email: String? = null,
+    val user_metadata: Map<String, Any?>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseAuthSessionResponse(
+    val access_token: String? = null,
+    val token_type: String? = null,
+    val expires_in: Long? = null,
+    val expires_at: Long? = null,
+    val refresh_token: String? = null,
+    val user: SupabaseAuthUserDto? = null,
+    val id: String? = null,
+    val email: String? = null
+)
+
+interface SupabaseAuthApi {
+    @POST("auth/v1/signup")
+    suspend fun signUp(@Body body: SupabaseAuthSignUpRequest): Response<SupabaseAuthSessionResponse>
+
+    @POST("auth/v1/otp")
+    suspend fun requestOtp(@Body body: SupabaseOtpRequest): Response<Unit>
+
+    @POST("auth/v1/verify")
+    suspend fun verifyOtp(@Body body: SupabaseVerifyOtpRequest): Response<SupabaseAuthSessionResponse>
+
+    @POST("auth/v1/token?grant_type=refresh_token")
+    suspend fun refreshSession(@Body body: SupabaseRefreshTokenRequest): Response<SupabaseAuthSessionResponse>
+
+    @GET("auth/v1/user")
+    suspend fun getCurrentAuthUser(
+        @Header("Authorization") bearerToken: String
+    ): Response<SupabaseAuthUserDto>
+
+    @POST("auth/v1/logout")
+    suspend fun logout(
+        @Header("Authorization") bearerToken: String
+    ): Response<Unit>
+}
+
 sealed class SupabaseConnectionStatus {
     data object Checking : SupabaseConnectionStatus()
     data class Connected(val endpoint: String) : SupabaseConnectionStatus()
@@ -399,6 +489,9 @@ object SupabaseClient {
 
     @Volatile
     private var cachedApi: SupabasePostgrestApi? = null
+
+    @Volatile
+    private var cachedAuthApi: SupabaseAuthApi? = null
 
     fun normalizedBaseUrl(): String {
         var base = KrishivantriRuntimeConfig.supabaseUrl.trim().trimEnd('/')
@@ -484,7 +577,8 @@ object SupabaseClient {
                     .header("Content-Type", "application/json")
                 // Legacy Supabase anon keys are 3-segment JWTs and require Authorization Bearer;
                 // newer sb_publishable_ keys authenticate via apikey header alone.
-                if (key.count { it == '.' } == 2) {
+                // Never overwrite an explicit user Bearer token (e.g. /auth/v1/user, /auth/v1/logout).
+                if (chain.request().header("Authorization") == null && key.count { it == '.' } == 2) {
                     reqBuilder.header("Authorization", "Bearer $key")
                 }
                 chain.proceed(reqBuilder.build())
@@ -495,22 +589,36 @@ object SupabaseClient {
 
     val api: SupabasePostgrestApi?
         get() {
-            if (!isConfigured()) return null
-            val baseUrl = normalizedBaseUrl() + "/"
-            val signature = "$baseUrl|${KrishivantriRuntimeConfig.supabaseAnonKey.trim()}"
-            val existing = cachedApi
-            if (existing != null && cachedSignature == signature) {
-                return existing
+            ensureClientsInitialized()
+            return cachedApi
+        }
+
+    val authApi: SupabaseAuthApi?
+        get() {
+            ensureClientsInitialized()
+            return cachedAuthApi
+        }
+
+    private fun ensureClientsInitialized() {
+        if (!isConfigured()) return
+        val baseUrl = normalizedBaseUrl() + "/"
+        val signature = "$baseUrl|${KrishivantriRuntimeConfig.supabaseAnonKey.trim()}"
+        if (cachedApi != null && cachedAuthApi != null && cachedSignature == signature) {
+            return
+        }
+        synchronized(this) {
+            if (cachedApi != null && cachedAuthApi != null && cachedSignature == signature) {
+                return
             }
             val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
-            val created = Retrofit.Builder()
+            val retrofit = Retrofit.Builder()
                 .baseUrl(baseUrl)
                 .client(okHttpClient)
                 .addConverterFactory(MoshiConverterFactory.create(moshi))
                 .build()
-                .create(SupabasePostgrestApi::class.java)
+            cachedApi = retrofit.create(SupabasePostgrestApi::class.java)
+            cachedAuthApi = retrofit.create(SupabaseAuthApi::class.java)
             cachedSignature = signature
-            cachedApi = created
-            return created
         }
+    }
 }
