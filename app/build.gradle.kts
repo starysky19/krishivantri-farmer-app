@@ -89,6 +89,11 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
+  ignoreList.add("ALLOWED_HOSTS")
+  ignoreList.add("DATABASE_URL")
+  ignoreList.add("DJANGO_DEBUG")
+  ignoreList.add("DJANGO_SECRET_KEY")
+  ignoreList.add("RAZORPAY_KEY_SECRET")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }

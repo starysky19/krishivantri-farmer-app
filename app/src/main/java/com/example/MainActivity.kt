@@ -125,6 +125,7 @@ fun KrishivantriApp(
 
     LaunchedEffect(Unit) {
         viewModel.selectAuthRole(UserRole.FARMER)
+        viewModel.checkDatabaseConnection()
     }
 
     LaunchedEffect(snackbarMessage) {
@@ -191,12 +192,13 @@ fun KrishivantriApp(
                         onFocusSavedFarm = viewModel::focusSavedFarm,
                         onCacheCurrentRegionOffline = viewModel::cacheCurrentRegionOffline,
                         onSelectPaymentMethod = viewModel::selectPaymentMethod,
-                        onConfirmOrder = viewModel::initiateFarmerOrderPlacement,
+                        onConfirmOrder = { viewModel.initiateFarmerOrderPlacement() },
                         onConsumeBookingSuccess = viewModel::consumeBookingSuccess,
                         onConfirmJobDone = viewModel::confirmFarmerJobDone,
                         onRatePilot = viewModel::ratePilot,
                         onUpdateCredentials = viewModel::updateFarmerCredentials,
-                        onSignOut = viewModel::signOut
+                        onSignOut = viewModel::signOut,
+                        onConfirmOrderWithMethod = viewModel::initiateFarmerOrderPlacement
                     )
                 }
             }

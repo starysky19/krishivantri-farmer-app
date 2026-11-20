@@ -186,7 +186,11 @@ fun FarmerDashboardScreen(
         onError: (String) -> Unit
     ) -> Unit,
     onSignOut: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onConfirmOrderWithMethod: (PaymentMethod) -> Unit = { method ->
+        onSelectPaymentMethod(method)
+        onConfirmOrder()
+    }
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -445,7 +449,7 @@ fun FarmerDashboardScreen(
                     onSaveFarmToSupabase = onSaveFarmToSupabase,
                     onCacheCurrentRegionOffline = onCacheCurrentRegionOffline,
                     onSelectPaymentMethod = onSelectPaymentMethod,
-                    onConfirmOrder = onConfirmOrder
+                    onConfirmOrderWithMethod = onConfirmOrderWithMethod
                 )
 
                 1 -> FarmerOrdersTab(
@@ -673,10 +677,11 @@ private fun FarmerMapBookingTab(
     onSaveFarmToSupabase: () -> Unit,
     onCacheCurrentRegionOffline: () -> Unit,
     onSelectPaymentMethod: (PaymentMethod) -> Unit,
-    onConfirmOrder: () -> Unit,
+    onConfirmOrderWithMethod: (PaymentMethod) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showSuggestions by remember { mutableStateOf(false) }
+    var showPaymentChoiceDialog by remember { mutableStateOf(false) }
 
     val mapPane: @Composable (Modifier) -> Unit = { paneModifier ->
         Box(modifier = paneModifier) {
@@ -693,8 +698,8 @@ private fun FarmerMapBookingTab(
                 drawingPoints = mapState.polygonPoints,
                 computedAcres = mapState.computedAcres,
                 computedHectares = mapState.computedHectares,
-                savedFarms = savedFarms,
-                bookingOrders = bookingOrders,
+                savedFarms = emptyList(),
+                bookingOrders = emptyList(),
                 operators = realtimeOperators,
                 onMapTapPoint = onMapTapPoint,
                 onUpdateBoundaryPoint = onUpdateBoundaryPoint,
@@ -1197,60 +1202,6 @@ private fun FarmerMapBookingTab(
                         }
                     }
 
-                    // Payment Method Selector
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            text = "Payment Method",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            PaymentMethod.entries.forEach { method ->
-                                val isSelected = mapState.selectedPaymentMethod == method
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isSelected) SoftSage else MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .clickable { onSelectPaymentMethod(method) }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (method == PaymentMethod.ONLINE) {
-                                                Icons.Rounded.Payments
-                                            } else {
-                                                Icons.Rounded.Agriculture
-                                            },
-                                            contentDescription = null,
-                                            tint = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = method.label,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     // Non-Cancellable Policy Notice Card
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -1270,7 +1221,7 @@ private fun FarmerMapBookingTab(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Non-cancellable once booked & paid. Payout to pilot is held safely in escrow and transferred ONLY when you click 'Job Done'.",
+                                text = "Non-cancellable once booked & paid. Choose Online or Cash when you click Book. Payout to pilot is held safely in escrow until you click 'Job Done'.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = ForestGreen
                             )
@@ -1285,7 +1236,7 @@ private fun FarmerMapBookingTab(
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
                     Button(
-                        onClick = onConfirmOrder,
+                        onClick = { showPaymentChoiceDialog = true },
                         enabled = mapState.polygonPoints.size >= 3 && mapState.computedAcres > 0.0,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
@@ -1327,6 +1278,168 @@ private fun FarmerMapBookingTab(
             }
         }
     }
+
+    if (showPaymentChoiceDialog) {
+        BookPaymentMethodDialog(
+            acres = mapState.computedAcres,
+            hectares = mapState.computedHectares,
+            totalAmount = mapState.computedAmount,
+            initialSelection = mapState.selectedPaymentMethod,
+            onConfirmPaymentChoice = { chosenMethod ->
+                showPaymentChoiceDialog = false
+                onSelectPaymentMethod(chosenMethod)
+                onConfirmOrderWithMethod(chosenMethod)
+            },
+            onDismiss = { showPaymentChoiceDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun BookPaymentMethodDialog(
+    acres: Double,
+    hectares: Double,
+    totalAmount: Double,
+    initialSelection: PaymentMethod,
+    onConfirmPaymentChoice: (PaymentMethod) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedMethod by remember { mutableStateOf(initialSelection) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Select Payment Method",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SoftSage,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Selected Farmland",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ForestGreen
+                            )
+                            Text(
+                                text = "$acres Acres • $hectares Ha",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = ForestGreen
+                            )
+                        }
+                        Text(
+                            text = formatInr(totalAmount),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = ForestGreen
+                        )
+                    }
+                }
+
+                PaymentMethod.entries.forEach { method ->
+                    val isSelected = selectedMethod == method
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSelected) SoftSage else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = BorderStroke(
+                            width = if (isSelected) 1.5.dp else 1.dp,
+                            color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { selectedMethod = method }
+                            .testTag("payment_option_${method.apiValue}")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 56.dp)
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (method == PaymentMethod.ONLINE) {
+                                    Icons.Rounded.Payments
+                                } else {
+                                    Icons.Rounded.Agriculture
+                                },
+                                contentDescription = method.label,
+                                tint = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = method.label,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (method == PaymentMethod.ONLINE) {
+                                        "Pay via Razorpay (UPI, Card, NetBanking). Escrow protected until 'Job Done'."
+                                    } else {
+                                        "Pay cash directly to your pilot after spraying is completed."
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CheckCircle,
+                                    contentDescription = "Selected",
+                                    tint = ForestGreen,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirmPaymentChoice(selectedMethod) },
+                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("payment_dialog_confirm_button")
+            ) {
+                Text(
+                    if (selectedMethod == PaymentMethod.ONLINE) {
+                        "Pay Online • ${formatInr(totalAmount)}"
+                    } else {
+                        "Book with Cash • ${formatInr(totalAmount)}"
+                    }
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 // -------------------------------------------------------------

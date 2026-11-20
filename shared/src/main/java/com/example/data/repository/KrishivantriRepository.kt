@@ -20,15 +20,25 @@ import com.example.data.model.RejectedOrderEntity
 import com.example.data.model.UserEntity
 import com.example.data.model.UserRole
 import com.example.data.remote.SupabaseClient
+import com.example.data.remote.SupabaseConnectionStatus
 import com.example.data.remote.SupabaseCoordDto
 import com.example.data.remote.SupabaseFarmerCoinsPatchDto
 import com.example.data.remote.SupabaseFarmerIdPatchDto
 import com.example.data.remote.SupabaseFarmerProfileDto
+import com.example.data.remote.SupabaseOrderAcceptedPatchDto
+import com.example.data.remote.SupabaseOrderDistancePatchDto
 import com.example.data.remote.SupabaseOrderDto
 import com.example.data.remote.SupabaseOrderRatingPatchDto
 import com.example.data.remote.SupabaseOrderStatusPatchDto
+import com.example.data.remote.SupabasePilotAccountPatchDto
+import com.example.data.remote.SupabasePilotLicensePatchDto
+import com.example.data.remote.SupabasePilotLocationPatchDto
+import com.example.data.remote.SupabasePilotOnlinePatchDto
+import com.example.data.remote.SupabasePilotProfileDto
+import com.example.data.remote.SupabasePilotRatingPatchDto
 import com.example.data.remote.SupabasePilotWalletPatchDto
 import com.example.data.remote.SupabaseUserDto
+import com.example.data.remote.SupabaseUserNamePatchDto
 import com.example.data.remote.SupabaseUserPatchDto
 import com.example.domain.GeoPolygonCalculator
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +87,9 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         const val ADMIN_PASSCODE = "KRISHI-ADMIN-2026"
     }
 
+    suspend fun checkCloudDatabaseConnection(): SupabaseConnectionStatus =
+        SupabaseClient.checkConnection()
+
     suspend fun ensureAdminSeeded() {
         val existing = dao.getUserByPhone(ADMIN_PHONE)
         if (existing == null) {
@@ -99,6 +112,14 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         val cleanPhone = phone.trim()
         val existing = dao.getUserByPhone(cleanPhone)
         if (existing != null) {
+            return AuthResult.Error("Mobile number already registered. Please sign in.")
+        }
+        val remoteExisting = withContext(Dispatchers.IO) {
+            runCatching {
+                SupabaseClient.api?.getUsersByPhone("eq.$cleanPhone")?.body()?.firstOrNull()
+            }.getOrNull()
+        }
+        if (remoteExisting != null) {
             return AuthResult.Error("Mobile number already registered. Please sign in.")
         }
         val user = UserEntity(
@@ -176,6 +197,38 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
             dao.insertUser(user)
             dao.insertPilotProfile(profile)
         }
+        withContext(Dispatchers.IO) {
+            runCatching {
+                SupabaseClient.api?.let { api ->
+                    api.upsertUser(
+                        SupabaseUserDto(
+                            id = user.id,
+                            phone = user.phone,
+                            name = user.name,
+                            role = user.role,
+                            created_at = user.createdAt
+                        )
+                    )
+                    api.upsertPilotProfile(
+                        SupabasePilotProfileDto(
+                            user_id = profile.userId,
+                            drone_type = profile.droneType,
+                            tank_capacity = profile.tankCapacity,
+                            license_document_uri = profile.licenseDocumentUri,
+                            is_license_verified = profile.isLicenseVerified,
+                            bank_upi_id = profile.bankUpiId,
+                            wallet_balance = profile.walletBalance,
+                            is_online = profile.isOnline,
+                            rating_average = profile.ratingAverage,
+                            rating_count = profile.ratingCount,
+                            current_lat = profile.currentLat,
+                            current_lng = profile.currentLng,
+                            location_updated_at = profile.locationUpdatedAt
+                        )
+                    )
+                }
+            }
+        }
         return AuthResult.Success(user)
     }
 
@@ -183,7 +236,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         val cleanPhone = phone.trim()
         var user = dao.getUserByPhone(cleanPhone)
         if (user == null) {
-            // Hydrate from Supabase if farmer exists on cloud DB
+            // Hydrate from Supabase if account exists on cloud DB
             user = withContext(Dispatchers.IO) {
                 runCatching {
                     val api = SupabaseClient.api ?: return@runCatching null
@@ -205,6 +258,27 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                                     userId = fp.user_id,
                                     farmerIdNumber = fp.farmer_id_number,
                                     coins = fp.coins
+                                )
+                            )
+                        }
+                    } else if (entity.role.equals(UserRole.PILOT.apiValue, ignoreCase = true)) {
+                        val profResp = api.getPilotProfile("eq.${entity.id}")
+                        profResp.body()?.firstOrNull()?.let { pp ->
+                            dao.insertPilotProfile(
+                                PilotProfileEntity(
+                                    userId = pp.user_id,
+                                    droneType = pp.drone_type,
+                                    tankCapacity = pp.tank_capacity,
+                                    licenseDocumentUri = pp.license_document_uri,
+                                    isLicenseVerified = pp.is_license_verified,
+                                    bankUpiId = pp.bank_upi_id,
+                                    walletBalance = pp.wallet_balance,
+                                    isOnline = pp.is_online,
+                                    ratingAverage = pp.rating_average,
+                                    ratingCount = pp.rating_count,
+                                    currentLat = pp.current_lat,
+                                    currentLng = pp.current_lng,
+                                    locationUpdatedAt = pp.location_updated_at
                                 )
                             )
                         }
@@ -526,14 +600,39 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
     suspend fun syncFarmerStateFromSupabase(farmerId: String) = withContext(Dispatchers.IO) {
         val api = SupabaseClient.api ?: return@withContext
         runCatching {
-            api.getFarmerProfile("eq.$farmerId").body()?.firstOrNull()?.let { fp ->
+            val remoteUser = api.getUsersById("eq.$farmerId").body()?.firstOrNull()
+            if (remoteUser == null) {
+                dao.getUserById(farmerId)?.let { localUser ->
+                    api.upsertUser(
+                        SupabaseUserDto(
+                            id = localUser.id,
+                            phone = localUser.phone,
+                            name = localUser.name,
+                            role = localUser.role,
+                            created_at = localUser.createdAt
+                        )
+                    )
+                }
+            }
+            val remoteProfile = api.getFarmerProfile("eq.$farmerId").body()?.firstOrNull()
+            if (remoteProfile != null) {
                 dao.insertFarmerProfile(
                     FarmerProfileEntity(
-                        userId = fp.user_id,
-                        farmerIdNumber = fp.farmer_id_number,
-                        coins = fp.coins
+                        userId = remoteProfile.user_id,
+                        farmerIdNumber = remoteProfile.farmer_id_number,
+                        coins = remoteProfile.coins
                     )
                 )
+            } else {
+                dao.getFarmerProfile(farmerId)?.let { localProf ->
+                    api.upsertFarmerProfile(
+                        SupabaseFarmerProfileDto(
+                            user_id = localProf.userId,
+                            farmer_id_number = localProf.farmerIdNumber,
+                            coins = localProf.coins
+                        )
+                    )
+                }
             }
         }
         runCatching {
@@ -620,12 +719,21 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
     suspend fun togglePilotOnline(pilotId: String, isOnline: Boolean) {
         val profile = dao.getPilotProfile(pilotId) ?: return
         dao.updatePilotProfile(profile.copy(isOnline = isOnline))
+        withContext(Dispatchers.IO) {
+            runCatching {
+                SupabaseClient.api?.patchPilotOnline(
+                    userIdFilter = "eq.$pilotId",
+                    body = SupabasePilotOnlinePatchDto(is_online = isOnline)
+                )
+            }
+        }
     }
 
     suspend fun updatePilotLiveLocation(pilotId: String, lat: Double, lng: Double) {
-        database.withTransaction {
-            val pilot = dao.getPilotProfile(pilotId) ?: return@withTransaction
-            val now = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        val orderUpdates = mutableListOf<Pair<String, SupabaseOrderDistancePatchDto>>()
+        val updatedPilot = database.withTransaction {
+            val pilot = dao.getPilotProfile(pilotId) ?: return@withTransaction false
             dao.updatePilotProfile(
                 pilot.copy(
                     currentLat = lat,
@@ -652,16 +760,57 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                         fieldCenterLng = fieldCenter.lng
                     )
                 )
+                orderUpdates.add(
+                    order.id to SupabaseOrderDistancePatchDto(
+                        distance_km = distKm,
+                        pilot_eta_minutes = updatedEta,
+                        field_center_lat = fieldCenter.lat,
+                        field_center_lng = fieldCenter.lng
+                    )
+                )
+            }
+            true
+        }
+        if (updatedPilot) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val api = SupabaseClient.api ?: return@runCatching
+                    api.patchPilotLocation(
+                        userIdFilter = "eq.$pilotId",
+                        body = SupabasePilotLocationPatchDto(
+                            current_lat = lat,
+                            current_lng = lng,
+                            location_updated_at = now
+                        )
+                    )
+                    orderUpdates.forEach { (orderId, patch) ->
+                        api.patchOrderDistance(
+                            orderIdFilter = "eq.$orderId",
+                            body = patch
+                        )
+                    }
+                }
             }
         }
     }
 
     suspend fun topUpPilotWallet(pilotId: String, amount: Double) {
         if (amount <= 0.0) return
-        database.withTransaction {
-            val profile = dao.getPilotProfile(pilotId) ?: return@withTransaction
+        val newBalance = database.withTransaction {
+            val profile = dao.getPilotProfile(pilotId) ?: return@withTransaction null
             val updatedBalance = ((profile.walletBalance + amount) * 100.0).roundToInt() / 100.0
             dao.updatePilotProfile(profile.copy(walletBalance = updatedBalance))
+            updatedBalance
+        }
+        if (newBalance != null) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    SupabaseClient.api?.patchPilotWalletBalance(
+                        userIdFilter = "eq.$pilotId",
+                        body = SupabasePilotWalletPatchDto(wallet_balance = newBalance)
+                    )
+                }
+            }
         }
     }
 
@@ -677,7 +826,11 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
         orderId: String,
         pilotLocation: LatLngPoint? = null
     ): AcceptOrderResult {
-        return database.withTransaction {
+        var acceptedPatchToSync: SupabaseOrderAcceptedPatchDto? = null
+        var updatedWalletToSync: Double? = null
+        var acceptedAtTimestamp = 0L
+
+        val result = database.withTransaction {
             val order = dao.getOrderById(orderId)
                 ?: return@withTransaction AcceptOrderResult.Error("Order not found.")
             if (order.orderStatus != OrderStatus.PENDING.apiValue) {
@@ -707,6 +860,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                 }
                 val newWallet = ((pilotWithLocation.walletBalance - order.adminCommission) * 100.0).roundToInt() / 100.0
                 dao.updatePilotProfile(pilotWithLocation.copy(walletBalance = newWallet))
+                updatedWalletToSync = newWallet
                 dao.insertCommissionLog(
                     CommissionLogEntity(
                         orderId = order.id,
@@ -753,8 +907,50 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                     acceptedAt = now
                 )
             )
+            acceptedAtTimestamp = now
+            acceptedPatchToSync = SupabaseOrderAcceptedPatchDto(
+                assigned_pilot_id = pilotId,
+                order_status = OrderStatus.ACCEPTED.apiValue,
+                pilot_eta_minutes = eta,
+                initial_eta_minutes = eta,
+                distance_km = distKm,
+                field_center_lat = fieldCenter.lat,
+                field_center_lng = fieldCenter.lng,
+                accepted_at = now
+            )
             AcceptOrderResult.Success
         }
+
+        if (result is AcceptOrderResult.Success) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val api = SupabaseClient.api ?: return@runCatching
+                    acceptedPatchToSync?.let { patch ->
+                        api.patchOrderAccepted(
+                            orderIdFilter = "eq.$orderId",
+                            body = patch
+                        )
+                    }
+                    updatedWalletToSync?.let { wallet ->
+                        api.patchPilotWalletBalance(
+                            userIdFilter = "eq.$pilotId",
+                            body = SupabasePilotWalletPatchDto(wallet_balance = wallet)
+                        )
+                    }
+                    if (pilotLocation != null) {
+                        api.patchPilotLocation(
+                            userIdFilter = "eq.$pilotId",
+                            body = SupabasePilotLocationPatchDto(
+                                current_lat = pilotLocation.lat,
+                                current_lng = pilotLocation.lng,
+                                location_updated_at = acceptedAtTimestamp
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return result
     }
 
     suspend fun rejectOrder(pilotId: String, orderId: String) {
@@ -770,6 +966,17 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                     pilotEtaMinutes = 0
                 )
             )
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    SupabaseClient.api?.patchOrderStatus(
+                        orderIdFilter = "eq.$orderId",
+                        body = SupabaseOrderStatusPatchDto(
+                            order_status = OrderStatus.IN_PROGRESS.apiValue,
+                            pilot_eta_minutes = 0
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -988,6 +1195,7 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
 
     suspend fun ratePilotForOrder(orderId: String, rating: Int) {
         val clamped = rating.coerceIn(1, 5)
+        var ratingSyncTarget: Triple<String, Double, Int>? = null
         database.withTransaction {
             val order = dao.getOrderById(orderId) ?: return@withTransaction
             val pilotId = order.assignedPilotId ?: return@withTransaction
@@ -1004,12 +1212,109 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
                     ratingCount = newCount
                 )
             )
+            ratingSyncTarget = Triple(pilotId, newAverage, newCount)
         }
         withContext(Dispatchers.IO) {
             runCatching {
-                SupabaseClient.api?.patchOrderRating(
+                val api = SupabaseClient.api ?: return@runCatching
+                api.patchOrderRating(
                     orderIdFilter = "eq.$orderId",
                     body = SupabaseOrderRatingPatchDto(pilot_rating = clamped)
+                )
+                ratingSyncTarget?.let { (pilotId, avg, count) ->
+                    api.patchPilotRating(
+                        userIdFilter = "eq.$pilotId",
+                        body = SupabasePilotRatingPatchDto(
+                            rating_average = avg,
+                            rating_count = count
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun syncPilotAndMarketStateFromSupabase() = pullMarketStateFromSupabase()
+
+    suspend fun syncAdminStateFromSupabase() = pullMarketStateFromSupabase()
+
+    private suspend fun pullMarketStateFromSupabase() = withContext(Dispatchers.IO) {
+        val api = SupabaseClient.api ?: return@withContext
+        runCatching {
+            api.getAllUsers().body().orEmpty().forEach { u ->
+                dao.insertUser(
+                    UserEntity(
+                        id = u.id,
+                        phone = u.phone,
+                        name = u.name,
+                        role = u.role,
+                        createdAt = u.created_at
+                    )
+                )
+            }
+        }
+        runCatching {
+            api.getAllPilots().body().orEmpty().forEach { pp ->
+                dao.insertPilotProfile(
+                    PilotProfileEntity(
+                        userId = pp.user_id,
+                        droneType = pp.drone_type,
+                        tankCapacity = pp.tank_capacity,
+                        licenseDocumentUri = pp.license_document_uri,
+                        isLicenseVerified = pp.is_license_verified,
+                        bankUpiId = pp.bank_upi_id,
+                        walletBalance = pp.wallet_balance,
+                        isOnline = pp.is_online,
+                        ratingAverage = pp.rating_average,
+                        ratingCount = pp.rating_count,
+                        currentLat = pp.current_lat,
+                        currentLng = pp.current_lng,
+                        locationUpdatedAt = pp.location_updated_at
+                    )
+                )
+            }
+        }
+        runCatching {
+            api.getAllOrders().body().orEmpty().forEach { dto ->
+                val localExisting = dao.getOrderById(dto.id)
+                if (localExisting != null && localExisting.orderStatus == OrderStatus.COMPLETED.apiValue) {
+                    return@forEach
+                }
+                val resolvedStatus = if (
+                    localExisting?.orderStatus == OrderStatus.AWAITING_CONFIRMATION.apiValue &&
+                    dto.order_status == OrderStatus.IN_PROGRESS.apiValue
+                ) {
+                    OrderStatus.AWAITING_CONFIRMATION.apiValue
+                } else {
+                    dto.order_status
+                }
+                val poly = dto.field_polygon_coordinates.map { LatLngPoint(it.lat, it.lng) }
+                dao.insertOrder(
+                    OrderEntity(
+                        id = dto.id,
+                        farmerId = dto.farmer_id,
+                        assignedPilotId = dto.assigned_pilot_id,
+                        fieldPolygonCoordinatesJson = GeoPolygonCalculator.encodePolygon(poly),
+                        acresToSpray = dto.acres_to_spray,
+                        locationAddress = dto.location_address,
+                        totalAmount = dto.total_amount,
+                        adminCommission = dto.admin_commission,
+                        pilotEarnings = dto.pilot_earnings,
+                        paymentMethod = dto.payment_method,
+                        paymentStatus = dto.payment_status,
+                        orderStatus = resolvedStatus,
+                        pilotEtaMinutes = dto.pilot_eta_minutes,
+                        initialEtaMinutes = dto.initial_eta_minutes,
+                        distanceKm = dto.distance_km,
+                        fieldCenterLat = dto.field_center_lat,
+                        fieldCenterLng = dto.field_center_lng,
+                        acceptedAt = dto.accepted_at,
+                        pilotRating = dto.pilot_rating,
+                        razorpayPaymentId = dto.razorpay_payment_id,
+                        pilotWalletCredited = localExisting?.pilotWalletCredited
+                            ?: (resolvedStatus == OrderStatus.COMPLETED.apiValue),
+                        createdAt = dto.created_at
+                    )
                 )
             }
         }
@@ -1075,6 +1380,14 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
     suspend fun setPilotLicenseVerified(pilotId: String, verified: Boolean) {
         val profile = dao.getPilotProfile(pilotId) ?: return
         dao.updatePilotProfile(profile.copy(isLicenseVerified = verified))
+        withContext(Dispatchers.IO) {
+            runCatching {
+                SupabaseClient.api?.patchPilotLicense(
+                    userIdFilter = "eq.$pilotId",
+                    body = SupabasePilotLicensePatchDto(is_license_verified = verified)
+                )
+            }
+        }
     }
 
     suspend fun updatePilotAccountDetails(
@@ -1097,21 +1410,39 @@ class KrishivantriRepository(private val database: KrishivantriDatabase) {
             return AuthResult.Error("Tank capacity must be positive.")
         }
 
-        val updatedUser = database.withTransaction {
+        val (updatedUser, updatedProfile) = database.withTransaction {
             val user = dao.getUserById(pilotId)
                 ?: throw IllegalStateException("Pilot user not found.")
             val profile = dao.getPilotProfile(pilotId)
                 ?: throw IllegalStateException("Pilot profile not found.")
             val nextUser = user.copy(name = cleanName)
-            val updatedProfile = profile.copy(
+            val nextProfile = profile.copy(
                 droneType = droneType.apiValue,
                 tankCapacity = tankCapacity,
                 bankUpiId = cleanUpi,
                 licenseDocumentUri = licenseDocumentUri ?: profile.licenseDocumentUri
             )
             dao.insertUser(nextUser)
-            dao.updatePilotProfile(updatedProfile)
-            nextUser
+            dao.updatePilotProfile(nextProfile)
+            nextUser to nextProfile
+        }
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val api = SupabaseClient.api ?: return@runCatching
+                api.patchUserName(
+                    idFilter = "eq.$pilotId",
+                    body = SupabaseUserNamePatchDto(name = updatedUser.name)
+                )
+                api.patchPilotAccount(
+                    userIdFilter = "eq.$pilotId",
+                    body = SupabasePilotAccountPatchDto(
+                        drone_type = updatedProfile.droneType,
+                        tank_capacity = updatedProfile.tankCapacity,
+                        bank_upi_id = updatedProfile.bankUpiId,
+                        license_document_uri = updatedProfile.licenseDocumentUri
+                    )
+                )
+            }
         }
         return AuthResult.Success(updatedUser)
     }

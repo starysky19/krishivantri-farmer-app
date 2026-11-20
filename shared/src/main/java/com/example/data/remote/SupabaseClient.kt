@@ -5,10 +5,13 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.PATCH
@@ -108,6 +111,67 @@ data class SupabaseOrderStatusPatchDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class SupabaseOrderAcceptedPatchDto(
+    val assigned_pilot_id: String,
+    val order_status: String,
+    val pilot_eta_minutes: Int,
+    val initial_eta_minutes: Int,
+    val distance_km: Double? = null,
+    val field_center_lat: Double,
+    val field_center_lng: Double,
+    val accepted_at: Long
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseOrderDistancePatchDto(
+    val distance_km: Double,
+    val pilot_eta_minutes: Int,
+    val field_center_lat: Double,
+    val field_center_lng: Double
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabasePilotOnlinePatchDto(
+    val is_online: Boolean
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabasePilotLocationPatchDto(
+    val current_lat: Double,
+    val current_lng: Double,
+    val location_updated_at: Long
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabasePilotLicensePatchDto(
+    val is_license_verified: Boolean
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabasePilotRatingPatchDto(
+    val rating_average: Double,
+    val rating_count: Int
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabasePilotAccountPatchDto(
+    val drone_type: String,
+    val tank_capacity: Double,
+    val bank_upi_id: String,
+    val license_document_uri: String
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseUserNamePatchDto(
+    val name: String
+)
+
+@JsonClass(generateAdapter = true)
+data class SupabaseIdOnlyDto(
+    val id: String
+)
+
+@JsonClass(generateAdapter = true)
 data class SupabaseFarmBoundaryDto(
     val id: String,
     val farmer_id: String,
@@ -141,6 +205,12 @@ data class SupabaseOperatorLocationDto(
 
 interface SupabasePostgrestApi {
     // --- Users & Profiles ---
+    @GET("rest/v1/users?select=id&limit=1")
+    suspend fun pingUsers(): Response<List<SupabaseIdOnlyDto>>
+
+    @GET("rest/v1/users?select=*")
+    suspend fun getAllUsers(): Response<List<SupabaseUserDto>>
+
     @Headers("Prefer: resolution=merge-duplicates,return=representation")
     @POST("rest/v1/users")
     suspend fun upsertUser(@Body body: SupabaseUserDto): Response<List<SupabaseUserDto>>
@@ -156,6 +226,13 @@ interface SupabasePostgrestApi {
     suspend fun patchUserCredentials(
         @Query("id") idFilter: String,
         @Body body: SupabaseUserPatchDto
+    ): Response<List<SupabaseUserDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/users")
+    suspend fun patchUserName(
+        @Query("id") idFilter: String,
+        @Body body: SupabaseUserNamePatchDto
     ): Response<List<SupabaseUserDto>>
 
     @Headers("Prefer: resolution=merge-duplicates,return=representation")
@@ -184,8 +261,17 @@ interface SupabasePostgrestApi {
     ): Response<List<SupabaseFarmerProfileDto>>
 
     @GET("rest/v1/pilot_profiles?select=*")
+    suspend fun getAllPilots(): Response<List<SupabasePilotProfileDto>>
+
+    @GET("rest/v1/pilot_profiles?select=*")
     suspend fun getPilotProfile(
         @Query("user_id") userIdFilter: String
+    ): Response<List<SupabasePilotProfileDto>>
+
+    @Headers("Prefer: resolution=merge-duplicates,return=representation")
+    @POST("rest/v1/pilot_profiles")
+    suspend fun upsertPilotProfile(
+        @Body body: SupabasePilotProfileDto
     ): Response<List<SupabasePilotProfileDto>>
 
     @Headers("Prefer: return=representation")
@@ -195,14 +281,66 @@ interface SupabasePostgrestApi {
         @Body body: SupabasePilotWalletPatchDto
     ): Response<List<SupabasePilotProfileDto>>
 
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pilot_profiles")
+    suspend fun patchPilotOnline(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabasePilotOnlinePatchDto
+    ): Response<List<SupabasePilotProfileDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pilot_profiles")
+    suspend fun patchPilotLocation(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabasePilotLocationPatchDto
+    ): Response<List<SupabasePilotProfileDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pilot_profiles")
+    suspend fun patchPilotLicense(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabasePilotLicensePatchDto
+    ): Response<List<SupabasePilotProfileDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pilot_profiles")
+    suspend fun patchPilotRating(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabasePilotRatingPatchDto
+    ): Response<List<SupabasePilotProfileDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pilot_profiles")
+    suspend fun patchPilotAccount(
+        @Query("user_id") userIdFilter: String,
+        @Body body: SupabasePilotAccountPatchDto
+    ): Response<List<SupabasePilotProfileDto>>
+
     // --- Spray Orders ---
     @Headers("Prefer: resolution=merge-duplicates,return=representation")
     @POST("rest/v1/orders")
     suspend fun upsertOrder(@Body body: SupabaseOrderDto): Response<List<SupabaseOrderDto>>
 
     @GET("rest/v1/orders?order=created_at.desc&select=*")
+    suspend fun getAllOrders(): Response<List<SupabaseOrderDto>>
+
+    @GET("rest/v1/orders?order=created_at.desc&select=*")
     suspend fun getOrdersForFarmer(
         @Query("farmer_id") farmerIdFilter: String
+    ): Response<List<SupabaseOrderDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/orders")
+    suspend fun patchOrderAccepted(
+        @Query("id") orderIdFilter: String,
+        @Body body: SupabaseOrderAcceptedPatchDto
+    ): Response<List<SupabaseOrderDto>>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/orders")
+    suspend fun patchOrderDistance(
+        @Query("id") orderIdFilter: String,
+        @Body body: SupabaseOrderDistancePatchDto
     ): Response<List<SupabaseOrderDto>>
 
     @Headers("Prefer: return=representation")
@@ -231,6 +369,11 @@ interface SupabasePostgrestApi {
         @Query("farmer_id") farmerIdFilter: String
     ): Response<List<SupabaseFarmBoundaryDto>>
 
+    @DELETE("rest/v1/farm_boundaries")
+    suspend fun deleteFarmBoundary(
+        @Query("id") idFilter: String
+    ): Response<Unit>
+
     // --- Drone Operators / Pilots Live Location ---
     @GET("rest/v1/operator_locations?select=*")
     suspend fun getOperatorLocations(): Response<List<SupabaseOperatorLocationDto>>
@@ -242,6 +385,13 @@ interface SupabasePostgrestApi {
     ): Response<List<SupabaseOperatorLocationDto>>
 }
 
+sealed class SupabaseConnectionStatus {
+    data object Checking : SupabaseConnectionStatus()
+    data class Connected(val endpoint: String) : SupabaseConnectionStatus()
+    data class MissingConfig(val missingKey: String, val message: String) : SupabaseConnectionStatus()
+    data class Error(val httpCode: Int?, val message: String) : SupabaseConnectionStatus()
+}
+
 object SupabaseClient {
 
     @Volatile
@@ -250,19 +400,74 @@ object SupabaseClient {
     @Volatile
     private var cachedApi: SupabasePostgrestApi? = null
 
-    fun isConfigured(): Boolean {
-        val url = KrishivantriRuntimeConfig.supabaseUrl.trim()
-        val key = KrishivantriRuntimeConfig.supabaseAnonKey.trim()
-        return url.startsWith("https://") &&
-            !url.contains("your-project") &&
-            key.isNotBlank() &&
-            !key.startsWith("MY_SUPABASE")
+    fun normalizedBaseUrl(): String {
+        var base = KrishivantriRuntimeConfig.supabaseUrl.trim().trimEnd('/')
+        if (base.endsWith("/rest/v1", ignoreCase = true)) {
+            base = base.dropLast("/rest/v1".length).trimEnd('/')
+        }
+        return base
     }
 
+    fun isUrlConfigured(): Boolean {
+        val url = normalizedBaseUrl()
+        return url.startsWith("https://") &&
+            !url.contains("your-project") &&
+            !url.contains("MY_SUPABASE")
+    }
+
+    fun isKeyConfigured(): Boolean {
+        val key = KrishivantriRuntimeConfig.supabaseAnonKey.trim()
+        return key.isNotBlank() && !key.startsWith("MY_SUPABASE")
+    }
+
+    fun isConfigured(): Boolean = isUrlConfigured() && isKeyConfigured()
+
     fun realtimeWebSocketUrl(): String {
-        val base = KrishivantriRuntimeConfig.supabaseUrl.trim().trimEnd('/')
+        val base = normalizedBaseUrl()
         val wsBase = base.replace("https://", "wss://").replace("http://", "ws://")
         return "$wsBase/realtime/v1/websocket?apikey=${KrishivantriRuntimeConfig.supabaseAnonKey.trim()}&vsn=1.0.0"
+    }
+
+    suspend fun checkConnection(): SupabaseConnectionStatus = withContext(Dispatchers.IO) {
+        if (!isUrlConfigured()) {
+            return@withContext SupabaseConnectionStatus.MissingConfig(
+                missingKey = "SUPABASE_URL",
+                message = "SUPABASE_URL is missing or placeholder in AI Studio Secrets."
+            )
+        }
+        if (!isKeyConfigured()) {
+            return@withContext SupabaseConnectionStatus.MissingConfig(
+                missingKey = "SUPABASE_ANON_KEY",
+                message = "SUPABASE_ANON_KEY is missing in AI Studio Secrets. Add your Supabase anon/publishable key to enable cloud sync."
+            )
+        }
+        val endpoint = normalizedBaseUrl()
+        val service = api ?: return@withContext SupabaseConnectionStatus.Error(
+            httpCode = null,
+            message = "Invalid Supabase URL: $endpoint"
+        )
+        try {
+            val response = service.pingUsers()
+            if (response.isSuccessful) {
+                SupabaseConnectionStatus.Connected(endpoint = endpoint)
+            } else {
+                val rawErr = runCatching { response.errorBody()?.string()?.trim() }.getOrNull()
+                    ?.take(180)
+                    .orEmpty()
+                val detailSuffix = if (rawErr.isNotBlank()) " ($rawErr)" else ""
+                val msg = when (response.code()) {
+                    401, 403 -> "Authentication rejected (HTTP ${response.code()}). Verify SUPABASE_ANON_KEY and RLS policies.$detailSuffix"
+                    404 -> "Table 'users' not found (HTTP 404). Run backend/supabase_schema.sql in Supabase SQL Editor.$detailSuffix"
+                    else -> "Supabase returned HTTP ${response.code()}: ${response.message()}$detailSuffix"
+                }
+                SupabaseConnectionStatus.Error(httpCode = response.code(), message = msg)
+            }
+        } catch (e: Exception) {
+            SupabaseConnectionStatus.Error(
+                httpCode = null,
+                message = "Cannot reach Supabase ($endpoint): ${e.localizedMessage ?: "Network error"}"
+            )
+        }
     }
 
     val okHttpClient: OkHttpClient by lazy {
@@ -291,7 +496,7 @@ object SupabaseClient {
     val api: SupabasePostgrestApi?
         get() {
             if (!isConfigured()) return null
-            val baseUrl = KrishivantriRuntimeConfig.supabaseUrl.trim().trimEnd('/') + "/"
+            val baseUrl = normalizedBaseUrl() + "/"
             val signature = "$baseUrl|${KrishivantriRuntimeConfig.supabaseAnonKey.trim()}"
             val existing = cachedApi
             if (existing != null && cachedSignature == signature) {

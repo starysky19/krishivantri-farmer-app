@@ -24,6 +24,7 @@ import com.example.data.model.PilotPerformanceStat
 import com.example.data.model.PilotProfileEntity
 import com.example.data.model.UserEntity
 import com.example.data.model.UserRole
+import com.example.data.remote.SupabaseConnectionStatus
 import com.example.data.repository.AcceptOrderResult
 import com.example.data.repository.AuthResult
 import com.example.data.repository.FarmRepository
@@ -56,7 +57,8 @@ data class RazorpaySheetState(
 sealed class RazorpayPurpose {
     data class FarmerOrderCheckout(
         val locationAddress: String,
-        val polygonPoints: List<LatLngPoint>
+        val polygonPoints: List<LatLngPoint>,
+        val farmName: String = ""
     ) : RazorpayPurpose()
 
     data class PilotWalletTopUp(val pilotId: String) : RazorpayPurpose()
@@ -72,6 +74,12 @@ data class AuthUiState(
     val isSignUpMode: Boolean = true,
     val errorMessage: String? = null,
     val isLoading: Boolean = false
+)
+
+data class DatabaseConnectionUiState(
+    val localDbName: String = "krishivantri_db (Room SQLite)",
+    val cloudStatus: SupabaseConnectionStatus = SupabaseConnectionStatus.Checking,
+    val lastCheckedAt: Long? = null
 )
 
 data class MapBookingState(
@@ -132,14 +140,43 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
+    private val _databaseStatus = MutableStateFlow(DatabaseConnectionUiState())
+    val databaseStatus: StateFlow<DatabaseConnectionUiState> = _databaseStatus.asStateFlow()
+
     private var gpsObserverJob: Job? = null
     private var pilotLiveLocationJob: Job? = null
     private var farmerSupabaseSyncJob: Job? = null
+    private var marketSupabaseSyncJob: Job? = null
 
     init {
         viewModelScope.launch {
             runCatching { repository.ensureAdminSeeded() }
             refreshOfflineRegions()
+        }
+        checkDatabaseConnection()
+    }
+
+    fun checkDatabaseConnection(announceResult: Boolean = false) {
+        viewModelScope.launch {
+            _databaseStatus.update { it.copy(cloudStatus = SupabaseConnectionStatus.Checking) }
+            val result = repository.checkCloudDatabaseConnection()
+            _databaseStatus.update {
+                it.copy(
+                    cloudStatus = result,
+                    lastCheckedAt = System.currentTimeMillis()
+                )
+            }
+            if (announceResult) {
+                _snackbarMessage.value = when (result) {
+                    is SupabaseConnectionStatus.Connected ->
+                        "Supabase Cloud DB connected (${result.endpoint})."
+                    is SupabaseConnectionStatus.MissingConfig ->
+                        "Supabase not connected: ${result.message}"
+                    is SupabaseConnectionStatus.Error ->
+                        "Supabase check failed: ${result.message}"
+                    is SupabaseConnectionStatus.Checking -> null
+                }
+            }
         }
     }
 
@@ -289,6 +326,10 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                 is AuthResult.Success -> {
                     _currentUser.value = result.user
                     _authState.update { it.copy(isLoading = false) }
+                    _mapBookingState.value = MapBookingState(
+                        hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
+                        offlineRegions = _mapBookingState.value.offlineRegions
+                    )
                     if (result.user.role == UserRole.FARMER.apiValue) {
                         startFarmerSupabaseSync(result.user.id)
                     }
@@ -348,6 +389,7 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                     _currentUser.value = result.user
                     _authState.update { it.copy(isLoading = false) }
                     syncPilotLiveLocationTracking(result.user)
+                    startMarketSupabaseSync()
                 }
                 is AuthResult.Error -> {
                     _authState.update { it.copy(isLoading = false, errorMessage = result.message) }
@@ -359,7 +401,10 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     fun submitAdminLogin(phone: String, passcode: String, onFailed: (String) -> Unit) {
         viewModelScope.launch {
             when (val result = repository.loginAdmin(phone, passcode)) {
-                is AuthResult.Success -> _currentUser.value = result.user
+                is AuthResult.Success -> {
+                    _currentUser.value = result.user
+                    startMarketSupabaseSync()
+                }
                 is AuthResult.Error -> onFailed(result.message)
             }
         }
@@ -403,6 +448,8 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         pilotLiveLocationJob = null
         farmerSupabaseSyncJob?.cancel()
         farmerSupabaseSyncJob = null
+        marketSupabaseSyncJob?.cancel()
+        marketSupabaseSyncJob = null
         _currentUser.value = null
         _mapBookingState.value = MapBookingState(
             hasLocationPermission = locationRepository.hasFineOrCoarsePermission()
@@ -705,23 +752,27 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         _mapBookingState.update { it.copy(selectedPaymentMethod = method) }
     }
 
-    fun initiateFarmerOrderPlacement() {
+    fun initiateFarmerOrderPlacement(
+        paymentMethod: PaymentMethod = _mapBookingState.value.selectedPaymentMethod
+    ) {
         val farmer = _currentUser.value ?: return
         val booking = _mapBookingState.value
         if (booking.polygonPoints.size < 3 || booking.computedAcres <= 0.0) {
             _snackbarMessage.value = "Tap at least 3 boundary points on the map to outline your farmland."
             return
         }
+        _mapBookingState.update { it.copy(selectedPaymentMethod = paymentMethod) }
         val locationLabel = booking.searchQuery.ifBlank { booking.resolvedLocationLabel }
 
-        if (booking.selectedPaymentMethod == PaymentMethod.ONLINE) {
+        if (paymentMethod == PaymentMethod.ONLINE) {
             _razorpaySheet.value = RazorpaySheetState(
                 title = "Krishivantri Spray Booking",
                 subtitle = "${booking.computedAcres} acres • $locationLabel",
                 amount = booking.computedAmount,
                 purpose = RazorpayPurpose.FarmerOrderCheckout(
                     locationAddress = locationLabel,
-                    polygonPoints = booking.polygonPoints
+                    polygonPoints = booking.polygonPoints,
+                    farmName = booking.farmNameInput
                 )
             )
         } else {
@@ -732,16 +783,23 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                     polygonPoints = booking.polygonPoints,
                     paymentMethod = PaymentMethod.CASH
                 )
+                autoSaveBookedBoundaryIfNew(
+                    farmerId = farmer.id,
+                    locationLabel = locationLabel,
+                    preferredName = booking.farmNameInput,
+                    polygonPoints = booking.polygonPoints
+                )
                 _mapBookingState.update {
                     it.copy(
                         polygonPoints = emptyList(),
                         computedAcres = 0.0,
                         computedHectares = 0.0,
                         computedAmount = 0.0,
+                        farmNameInput = "",
                         bookingSuccessOrderId = order.id
                     )
                 }
-                _snackbarMessage.value = "Spray order confirmed for ${order.acresToSpray} acres."
+                _snackbarMessage.value = "Cash spray order confirmed for ${order.acresToSpray} acres."
             }
         }
     }
@@ -759,12 +817,19 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                         paymentMethod = PaymentMethod.ONLINE,
                         razorpayPaymentId = razorpayPaymentId
                     )
+                    autoSaveBookedBoundaryIfNew(
+                        farmerId = user.id,
+                        locationLabel = purpose.locationAddress,
+                        preferredName = purpose.farmName,
+                        polygonPoints = purpose.polygonPoints
+                    )
                     _mapBookingState.update {
                         it.copy(
                             polygonPoints = emptyList(),
                             computedAcres = 0.0,
                             computedHectares = 0.0,
                             computedAmount = 0.0,
+                            farmNameInput = "",
                             bookingSuccessOrderId = order.id
                         )
                     }
@@ -777,6 +842,35 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                 }
             }
             _razorpaySheet.value = null
+        }
+    }
+
+    private suspend fun autoSaveBookedBoundaryIfNew(
+        farmerId: String,
+        locationLabel: String,
+        preferredName: String,
+        polygonPoints: List<LatLngPoint>
+    ) {
+        if (polygonPoints.size < 3) return
+        val alreadySaved = savedFarms.value.any { existing ->
+            val existingPoints = GeoPolygonCalculator.decodePolygon(existing.polygonCoordinatesJson)
+            existingPoints.size == polygonPoints.size &&
+                existingPoints.zip(polygonPoints).all { (a, b) ->
+                    kotlin.math.abs(a.lat - b.lat) < 0.00005 &&
+                        kotlin.math.abs(a.lng - b.lng) < 0.00005
+                }
+        }
+        if (!alreadySaved) {
+            val acres = GeoPolygonCalculator.calculatePolygonAreaAcres(polygonPoints)
+            val fallbackLabel = locationLabel.substringBefore(",").trim().ifBlank { "My Farm" }
+            val resolvedName = preferredName.trim().ifBlank { "$fallbackLabel ($acres ac)" }
+            runCatching {
+                farmRepository.saveFarmBoundary(
+                    farmerId = farmerId,
+                    farmName = resolvedName,
+                    polygonPoints = polygonPoints
+                )
+            }
         }
     }
 
@@ -798,6 +892,18 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                 runCatching {
                     farmRepository.syncWithSupabase(farmerId)
                     repository.syncFarmerStateFromSupabase(farmerId)
+                }
+                kotlinx.coroutines.delay(15_000L)
+            }
+        }
+    }
+
+    private fun startMarketSupabaseSync() {
+        marketSupabaseSyncJob?.cancel()
+        marketSupabaseSyncJob = viewModelScope.launch {
+            while (true) {
+                runCatching {
+                    repository.syncPilotAndMarketStateFromSupabase()
                 }
                 kotlinx.coroutines.delay(15_000L)
             }
@@ -972,5 +1078,6 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         stopBatteryEfficientGpsUpdates()
         pilotLiveLocationJob?.cancel()
         farmerSupabaseSyncJob?.cancel()
+        marketSupabaseSyncJob?.cancel()
     }
 }

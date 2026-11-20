@@ -61,6 +61,9 @@ class FarmRepository(private val dao: KrishivantriDao) {
 
     suspend fun deleteFarmBoundary(boundaryId: String) = withContext(Dispatchers.IO) {
         dao.deleteFarmBoundary(boundaryId)
+        runCatching {
+            SupabaseClient.api?.deleteFarmBoundary("eq.$boundaryId")
+        }
     }
 
     suspend fun syncWithSupabase(farmerId: String): Int = withContext(Dispatchers.IO) {
