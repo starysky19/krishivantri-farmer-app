@@ -6,10 +6,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.KrishivantriDatabase
 import com.example.data.local.PersistentAuthSessionStore
+import com.example.data.model.AgriStoreCartItem
+import com.example.data.model.AgriStoreOrderReceipt
+import com.example.data.model.AgriStoreProduct
+import com.example.data.model.AppLanguage
 import com.example.data.model.CommissionLogEntity
 import com.example.data.model.DailyOrderVolume
 import com.example.data.model.DroneType
 import com.example.data.model.FarmBoundaryEntity
+import com.example.data.model.FarmerCatalogDefaults
 import com.example.data.model.FarmerProfileEntity
 import com.example.data.model.FarmerWithUser
 import com.example.data.model.LatLngPoint
@@ -66,6 +71,11 @@ sealed class RazorpayPurpose {
     ) : RazorpayPurpose()
 
     data class PilotWalletTopUp(val pilotId: String) : RazorpayPurpose()
+
+    data class AgriStoreCheckout(
+        val itemCount: Int,
+        val summaryLabel: String
+    ) : RazorpayPurpose()
 }
 
 data class InsufficientWalletAlert(
@@ -118,6 +128,8 @@ data class MapBookingState(
     val offlineRegions: List<OfflineMapRegionInfo> = emptyList(),
     val offlineDownloadProgress: Int? = null,
     val selectedPaymentMethod: PaymentMethod = PaymentMethod.ONLINE,
+    val selectedCrop: String = FarmerCatalogDefaults.cropTypes.first(),
+    val selectedFormulaId: String = FarmerCatalogDefaults.sprayObjectives.first().id,
     val isSearchingLocation: Boolean = false,
     val bookingSuccessOrderId: String? = null
 )
@@ -155,6 +167,15 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     private val _databaseStatus = MutableStateFlow(DatabaseConnectionUiState())
     val databaseStatus: StateFlow<DatabaseConnectionUiState> = _databaseStatus.asStateFlow()
+
+    private val _appLanguage = MutableStateFlow(AppLanguage.EN)
+    val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
+
+    private val _agriStoreCart = MutableStateFlow<List<AgriStoreCartItem>>(emptyList())
+    val agriStoreCart: StateFlow<List<AgriStoreCartItem>> = _agriStoreCart.asStateFlow()
+
+    private val _agriStoreReceipts = MutableStateFlow<List<AgriStoreOrderReceipt>>(emptyList())
+    val agriStoreReceipts: StateFlow<List<AgriStoreOrderReceipt>> = _agriStoreReceipts.asStateFlow()
 
     private var gpsObserverJob: Job? = null
     private var pilotLiveLocationJob: Job? = null
@@ -202,11 +223,10 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             if (announceResult) {
                 _snackbarMessage.value = when (result) {
                     is SupabaseConnectionStatus.Connected ->
-                        "Supabase Cloud DB connected (${result.endpoint})."
-                    is SupabaseConnectionStatus.MissingConfig ->
-                        "Supabase not connected: ${result.message}"
+                        "Cloud sync is active and up to date."
+                    is SupabaseConnectionStatus.MissingConfig,
                     is SupabaseConnectionStatus.Error ->
-                        "Supabase check failed: ${result.message}"
+                        "Unable to reach cloud sync right now. Please try again."
                     is SupabaseConnectionStatus.Checking -> null
                 }
             }
@@ -663,6 +683,8 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         _mapBookingState.value = MapBookingState(
             hasLocationPermission = locationRepository.hasFineOrCoarsePermission()
         )
+        _agriStoreCart.value = emptyList()
+        _agriStoreReceipts.value = emptyList()
         _razorpaySheet.value = null
         _insufficientWalletAlert.value = null
     }
@@ -908,9 +930,9 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             )
             _mapBookingState.update { it.copy(isSavingFarm = false, farmNameInput = "") }
             _snackbarMessage.value = if (saved.isSyncedToSupabase) {
-                "Saved '${saved.farmName}' (${saved.areaAcres} ac / ${saved.areaHectares} ha) to Supabase."
+                "Saved '${saved.farmName}' (${saved.areaAcres} ac / ${saved.areaHectares} ha) to My Farms."
             } else {
-                "Saved '${saved.farmName}' locally (${saved.areaAcres} ac / ${saved.areaHectares} ha). Will sync when Supabase is connected."
+                "Saved '${saved.farmName}' locally (${saved.areaAcres} ac / ${saved.areaHectares} ha). Will sync automatically when online."
             }
         }
     }
@@ -957,6 +979,109 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    fun toggleLanguage(language: AppLanguage) {
+        _appLanguage.value = language
+    }
+
+    fun selectSprayCrop(crop: String) {
+        _mapBookingState.update { it.copy(selectedCrop = crop) }
+    }
+
+    fun selectSprayFormula(formulaId: String) {
+        _mapBookingState.update { it.copy(selectedFormulaId = formulaId) }
+    }
+
+    fun rebookOrderPolygon(order: OrderWithDetails) {
+        val points = order.polygonPoints
+        if (points.size < 3) return
+        val centerLat = if (order.order.fieldCenterLat != 0.0) {
+            order.order.fieldCenterLat
+        } else {
+            points.map { it.lat }.average()
+        }
+        val centerLng = if (order.order.fieldCenterLng != 0.0) {
+            order.order.fieldCenterLng
+        } else {
+            points.map { it.lng }.average()
+        }
+        val cleanLocation = order.order.locationAddress
+            .substringBefore(" • ")
+            .ifBlank { "Saved Plot" }
+        recalculatePolygon(points)
+        _mapBookingState.update {
+            it.copy(
+                searchQuery = cleanLocation,
+                resolvedLocationLabel = cleanLocation,
+                mapCenter = LatLngPoint(centerLat, centerLng),
+                farmNameInput = cleanLocation,
+                cameraFlyNonce = it.cameraFlyNonce + 1
+            )
+        }
+        _snackbarMessage.value = "Plot loaded onto Book Spray map (${order.order.acresToSpray} acres)."
+    }
+
+    fun addToAgriCart(product: AgriStoreProduct) {
+        _agriStoreCart.update { current ->
+            val existing = current.firstOrNull { it.product.id == product.id }
+            if (existing != null) {
+                current.map {
+                    if (it.product.id == product.id) it.copy(quantity = it.quantity + 1) else it
+                }
+            } else {
+                current + AgriStoreCartItem(product = product, quantity = 1)
+            }
+        }
+    }
+
+    fun updateAgriCartQty(productId: String, delta: Int) {
+        _agriStoreCart.update { current ->
+            current.mapNotNull { item ->
+                if (item.product.id != productId) {
+                    item
+                } else {
+                    val next = item.quantity + delta
+                    if (next <= 0) null else item.copy(quantity = next)
+                }
+            }
+        }
+    }
+
+    fun clearAgriCart() {
+        _agriStoreCart.value = emptyList()
+    }
+
+    fun initiateAgriStoreCheckout(paymentMethod: PaymentMethod) {
+        val cart = _agriStoreCart.value
+        if (cart.isEmpty()) {
+            _snackbarMessage.value = "Add bio-inputs to your cart before checkout."
+            return
+        }
+        val totalItems = cart.sumOf { it.quantity }
+        val totalAmount = cart.sumOf { it.lineTotal }
+        val summary = cart.joinToString(", ") { "${it.quantity}× ${it.product.title}" }
+        if (paymentMethod == PaymentMethod.ONLINE) {
+            _razorpaySheet.value = RazorpaySheetState(
+                title = "Krishivantri Agri Store",
+                subtitle = "$totalItems items • $summary",
+                amount = totalAmount,
+                purpose = RazorpayPurpose.AgriStoreCheckout(
+                    itemCount = totalItems,
+                    summaryLabel = summary
+                )
+            )
+        } else {
+            val receipt = AgriStoreOrderReceipt(
+                orderId = "KV-STR-${(System.currentTimeMillis() % 100000).toString().padStart(5, '0')}",
+                itemCount = totalItems,
+                totalAmount = totalAmount,
+                paymentMethod = PaymentMethod.CASH
+            )
+            _agriStoreReceipts.update { listOf(receipt) + it }
+            _agriStoreCart.value = emptyList()
+            _snackbarMessage.value = "Agri Store order ${receipt.orderId} placed (Cash on Delivery)."
+        }
+    }
+
     fun selectPaymentMethod(method: PaymentMethod) {
         _mapBookingState.update { it.copy(selectedPaymentMethod = method) }
     }
@@ -971,12 +1096,17 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             return
         }
         _mapBookingState.update { it.copy(selectedPaymentMethod = paymentMethod) }
-        val locationLabel = booking.searchQuery.ifBlank { booking.resolvedLocationLabel }
+        val baseLocation = booking.searchQuery.ifBlank { booking.resolvedLocationLabel }
+            .substringBefore(" • ")
+            .ifBlank { "Farmland Plot" }
+        val formulaLabel = FarmerCatalogDefaults.sprayObjectives
+            .firstOrNull { it.id == booking.selectedFormulaId }?.title ?: "Organic Pest Control"
+        val locationLabel = "$baseLocation • ${booking.selectedCrop} ($formulaLabel)"
 
         if (paymentMethod == PaymentMethod.ONLINE) {
             _razorpaySheet.value = RazorpaySheetState(
                 title = "Krishivantri Spray Booking",
-                subtitle = "${booking.computedAcres} acres • $locationLabel",
+                subtitle = "${booking.computedAcres} acres • $baseLocation • ${booking.selectedCrop}",
                 amount = booking.computedAmount,
                 purpose = RazorpayPurpose.FarmerOrderCheckout(
                     locationAddress = locationLabel,
@@ -1049,6 +1179,19 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                     repository.topUpPilotWallet(purpose.pilotId, sheet.amount)
                     _snackbarMessage.value = "₹${sheet.amount.toInt()} added to your pilot wallet."
                 }
+                is RazorpayPurpose.AgriStoreCheckout -> {
+                    val receipt = AgriStoreOrderReceipt(
+                        orderId = "KV-STR-${(System.currentTimeMillis() % 100000).toString().padStart(5, '0')}",
+                        itemCount = purpose.itemCount,
+                        totalAmount = sheet.amount,
+                        paymentMethod = PaymentMethod.ONLINE,
+                        razorpayPaymentId = razorpayPaymentId
+                    )
+                    _agriStoreReceipts.update { listOf(receipt) + it }
+                    _agriStoreCart.value = emptyList()
+                    val refSuffix = razorpayPaymentId?.let { " ($it)" }.orEmpty()
+                    _snackbarMessage.value = "Agri Store payment verified$refSuffix. Order ${receipt.orderId} confirmed."
+                }
             }
             _razorpaySheet.value = null
         }
@@ -1091,7 +1234,7 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun onRazorpayKeyMissing() {
         _razorpaySheet.value = null
-        _snackbarMessage.value = "Configure RAZORPAY_KEY_ID in the AI Studio Secrets panel to open live Razorpay Checkout."
+        _snackbarMessage.value = "Online payment is temporarily unavailable. Please try again shortly or choose Cash on Spraying."
     }
 
     private fun startFarmerSupabaseSync(farmerId: String) {

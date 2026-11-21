@@ -564,10 +564,14 @@ class EmailOtpAuthRepository(
 
         return when (val outcome = backend.verifyOtp(cleanEmail, cleanOtp)) {
             is BackendVerifyOutcome.Verified -> {
-                val user = hydrateVerifiedFarmer(outcome)
-                    ?: return EmailAuthResult.Error(
-                        "Unable to sign in to the Farmer Portal with this account."
-                    )
+                val user = when (val hydrated = hydrateVerifiedFarmer(outcome)) {
+                    is HydrateFarmerResult.Success -> hydrated.user
+                    is HydrateFarmerResult.WrongRole -> {
+                        return EmailAuthResult.Error(
+                            "This email (${outcome.email}) is registered as a '${hydrated.actualRole}' account, not a Farmer account. Please sign in with a registered Farmer email."
+                        )
+                    }
+                }
 
                 val session = AuthSession(
                     userId = user.id,
@@ -636,7 +640,12 @@ class EmailOtpAuthRepository(
         }
     }
 
-    private suspend fun hydrateVerifiedFarmer(verified: BackendVerifyOutcome.Verified): UserEntity? {
+    private sealed class HydrateFarmerResult {
+        data class Success(val user: UserEntity) : HydrateFarmerResult()
+        data class WrongRole(val actualRole: String) : HydrateFarmerResult()
+    }
+
+    private suspend fun hydrateVerifiedFarmer(verified: BackendVerifyOutcome.Verified): HydrateFarmerResult {
         val metaName = (verified.metadata["name"] as? String)?.trim().orEmpty()
         val metaPhone = (verified.metadata["phone"] as? String)?.trim().orEmpty()
         val metaFarmerId = (verified.metadata["farmer_id_number"] as? String)?.trim().orEmpty()
@@ -654,7 +663,13 @@ class EmailOtpAuthRepository(
                     val api = SupabaseClient.api ?: return@runCatching null
                     val byEmail = runCatching {
                         val r = api.getUsersByEmail("eq.${verified.email}")
-                        if (r.isSuccessful) r.body()?.firstOrNull() else null
+                        val exact = if (r.isSuccessful) r.body()?.firstOrNull() else null
+                        if (exact != null) {
+                            exact
+                        } else {
+                            val ci = api.getUsersByEmail("ilike.${verified.email}")
+                            if (ci.isSuccessful) ci.body()?.firstOrNull() else null
+                        }
                     }.getOrNull()
                     val byId = byEmail ?: api.getUsersById("eq.${verified.userId}").body()?.firstOrNull()
                     val remote = byId ?: metaPhone.takeIf { it.isNotBlank() }?.let {
@@ -690,7 +705,7 @@ class EmailOtpAuthRepository(
         if (user == null) {
             val resolvedRole = metaRole.ifBlank { UserRole.FARMER.apiValue }
             if (!resolvedRole.equals(UserRole.FARMER.apiValue, ignoreCase = true)) {
-                return null
+                return HydrateFarmerResult.WrongRole(resolvedRole)
             }
             val newUser = UserEntity(
                 id = verified.userId,
@@ -741,13 +756,13 @@ class EmailOtpAuthRepository(
                     }
                 }
             }
-            return newUser
+            return HydrateFarmerResult.Success(newUser)
         }
 
         if (!user.role.equals(UserRole.FARMER.apiValue, ignoreCase = true) &&
             !user.role.equals(UserRole.ADMIN.apiValue, ignoreCase = true)
         ) {
-            return null
+            return HydrateFarmerResult.WrongRole(user.role)
         }
 
         // Ensure email is populated locally if missing
@@ -779,7 +794,7 @@ class EmailOtpAuthRepository(
             }
         }
 
-        return normalizedUser
+        return HydrateFarmerResult.Success(normalizedUser)
     }
 
     private suspend fun findOrHydrateUserByIdOrEmail(userId: String, email: String): UserEntity? {

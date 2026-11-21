@@ -117,8 +117,12 @@ fun MapLibreFarmMap(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    remember(context) {
+    val mapInitResult = remember(context) {
         runCatching { MapLibre.getInstance(context.applicationContext) }
+    }
+    if (mapInitResult.isFailure) {
+        Box(modifier = modifier.fillMaxSize())
+        return
     }
 
     val mapView = remember {

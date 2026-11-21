@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 put("description", sheet.subtitle)
                 put("currency", "INR")
                 put("amount", (sheet.amount * 100.0).roundToInt().coerceAtLeast(100))
-                put("theme", JSONObject().put("color", "#1B4332"))
+                put("theme", JSONObject().put("color", "#1B5E3A"))
 
                 val retryObj = JSONObject().apply {
                     put("enabled", true)
@@ -93,6 +93,9 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 val prefill = JSONObject()
                 viewModel.currentUser.value?.phone?.takeIf { it.isNotBlank() }?.let {
                     prefill.put("contact", it)
+                }
+                viewModel.currentUser.value?.email?.takeIf { it.isNotBlank() }?.let {
+                    prefill.put("email", it)
                 }
                 put("prefill", prefill)
             }
@@ -127,6 +130,10 @@ fun KrishivantriApp(
     val adminOverview by viewModel.adminOverview.collectAsStateWithLifecycle()
     val razorpaySheet by viewModel.razorpaySheet.collectAsStateWithLifecycle()
     val snackbarMessage by viewModel.snackbarMessage.collectAsStateWithLifecycle()
+    val databaseStatus by viewModel.databaseStatus.collectAsStateWithLifecycle()
+    val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
+    val agriStoreCart by viewModel.agriStoreCart.collectAsStateWithLifecycle()
+    val agriStoreReceipts by viewModel.agriStoreReceipts.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -203,6 +210,11 @@ fun KrishivantriApp(
                         bookingOrdersForMap = bookingOrdersForMap,
                         realtimeOperators = realtimeOperators,
                         orders = farmerOrders,
+                        databaseStatus = databaseStatus,
+                        appLanguage = appLanguage,
+                        agriStoreCart = agriStoreCart,
+                        agriStoreReceipts = agriStoreReceipts,
+                        onToggleLanguage = viewModel::toggleLanguage,
                         onLocationPermissionResult = viewModel::onLocationPermissionResult,
                         onResumeGpsUpdates = viewModel::startBatteryEfficientGpsUpdates,
                         onPauseGpsUpdates = viewModel::stopBatteryEfficientGpsUpdates,
@@ -225,14 +237,22 @@ fun KrishivantriApp(
                         onSaveFarmToSupabase = viewModel::saveFarmBoundaryToSupabase,
                         onFocusSavedFarm = viewModel::focusSavedFarm,
                         onCacheCurrentRegionOffline = viewModel::cacheCurrentRegionOffline,
+                        onSelectSprayCrop = viewModel::selectSprayCrop,
+                        onSelectSprayFormula = viewModel::selectSprayFormula,
                         onSelectPaymentMethod = viewModel::selectPaymentMethod,
                         onConfirmOrder = { viewModel.initiateFarmerOrderPlacement() },
+                        onConfirmOrderWithMethod = viewModel::initiateFarmerOrderPlacement,
+                        onRebookOrderPolygon = viewModel::rebookOrderPolygon,
+                        onAddToAgriCart = viewModel::addToAgriCart,
+                        onUpdateAgriCartQty = viewModel::updateAgriCartQty,
+                        onClearAgriCart = viewModel::clearAgriCart,
+                        onCheckoutAgriStore = viewModel::initiateAgriStoreCheckout,
+                        onRefreshDatabaseConnection = { viewModel.checkDatabaseConnection(announceResult = true) },
                         onConsumeBookingSuccess = viewModel::consumeBookingSuccess,
                         onConfirmJobDone = viewModel::confirmFarmerJobDone,
                         onRatePilot = viewModel::ratePilot,
                         onUpdateCredentials = viewModel::updateFarmerCredentials,
-                        onSignOut = viewModel::signOut,
-                        onConfirmOrderWithMethod = viewModel::initiateFarmerOrderPlacement
+                        onSignOut = viewModel::signOut
                     )
                 }
             }

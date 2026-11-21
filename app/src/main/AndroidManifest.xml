@@ -29,10 +29,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name="com.razorpay.CheckoutActivity"
-            android:hardwareAccelerated="false"
-            tools:node="merge" />
     </application>
 
 </manifest>
