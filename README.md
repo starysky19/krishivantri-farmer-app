@@ -1,7 +1,3 @@
-<div align="center">
-<img width="1200" height="475" alt="Krishivantri Banner" src="./assets/banner.png" />
-</div>
-
 # Krishivantri — Farmer App
 
 **Krishivantri** is an agriculture-focused mobile application that enables farmers to select their farmland boundaries using a polygon tool, get instant pricing, book drone spraying services so a drone pilot arrives at their location to spray and complete the job, and order organic medicines available on the platform whenever needed.
