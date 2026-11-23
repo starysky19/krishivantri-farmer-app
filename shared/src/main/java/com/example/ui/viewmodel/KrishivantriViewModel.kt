@@ -41,8 +41,10 @@ import com.example.data.repository.KrishivantriRepository
 import com.example.data.repository.LocationRepository
 import com.example.data.repository.MapRepository
 import com.example.data.repository.OtpRequestResult
+import com.example.domain.AppErrorMapper
 import com.example.domain.GeoPolygonCalculator
 import com.example.domain.LocationMatch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -194,7 +196,15 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private suspend fun restorePersistentSessionOnLaunch() {
-        val restored = runCatching { emailAuthRepository.restorePersistentSession() }.getOrNull()
+        val hadSavedSession = runCatching { sessionStore.loadSession() != null }.getOrDefault(false)
+        val restored = try {
+            emailAuthRepository.restorePersistentSession()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            AppErrorMapper.logError("KrishivantriAuth", "Failed to restore session", t)
+            null
+        }
         if (restored is EmailAuthResult.Success) {
             _currentUser.value = restored.user
             _mapBookingState.value = MapBookingState(
@@ -206,14 +216,28 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             } else if (restored.user.role == UserRole.ADMIN.apiValue) {
                 startMarketSupabaseSync()
             }
+            _authState.update { it.copy(isRestoringSession = false) }
+        } else {
+            _authState.update {
+                it.copy(
+                    isRestoringSession = false,
+                    errorMessage = if (hadSavedSession) AppErrorMapper.SESSION_EXPIRED else it.errorMessage
+                )
+            }
         }
-        _authState.update { it.copy(isRestoringSession = false) }
     }
 
     fun checkDatabaseConnection(announceResult: Boolean = false) {
         viewModelScope.launch {
             _databaseStatus.update { it.copy(cloudStatus = SupabaseConnectionStatus.Checking) }
-            val result = repository.checkCloudDatabaseConnection()
+            val result = try {
+                repository.checkCloudDatabaseConnection()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                AppErrorMapper.logError("KrishivantriCloud", "Cloud connection check failed", t)
+                SupabaseConnectionStatus.Error(httpCode = null, message = AppErrorMapper.CONNECTION_ISSUE)
+            }
             _databaseStatus.update {
                 it.copy(
                     cloudStatus = result,
@@ -377,27 +401,47 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     ) {
         viewModelScope.launch {
             _authState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = emailAuthRepository.registerFarmerWithEmail(name, email, phone, farmerId)) {
-                is EmailAuthResult.Success -> {
-                    _currentUser.value = result.user
-                    _authState.update {
-                        it.copy(
-                            isLoading = false,
-                            otpRequestedEmail = null,
-                            otpInfoMessage = null,
-                            errorMessage = null
+            try {
+                when (val result = emailAuthRepository.registerFarmerWithEmail(name, email, phone, farmerId)) {
+                    is EmailAuthResult.Success -> {
+                        _currentUser.value = result.user
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                otpRequestedEmail = null,
+                                otpInfoMessage = null,
+                                errorMessage = null
+                            )
+                        }
+                        _mapBookingState.value = MapBookingState(
+                            hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
+                            offlineRegions = _mapBookingState.value.offlineRegions
                         )
+                        if (result.user.role == UserRole.FARMER.apiValue) {
+                            startFarmerSupabaseSync(result.user.id)
+                        }
                     }
-                    _mapBookingState.value = MapBookingState(
-                        hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
-                        offlineRegions = _mapBookingState.value.offlineRegions
-                    )
-                    if (result.user.role == UserRole.FARMER.apiValue) {
-                        startFarmerSupabaseSync(result.user.id)
+                    is EmailAuthResult.Error -> {
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = AppErrorMapper.sanitizeUiError(
+                                    result.message,
+                                    AppErrorMapper.UNABLE_TO_COMPLETE,
+                                    "KrishivantriAuth"
+                                )
+                            )
+                        }
                     }
                 }
-                is EmailAuthResult.Error -> {
-                    _authState.update { it.copy(isLoading = false, errorMessage = result.message) }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _authState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = AppErrorMapper.mapThrowable(t, "KrishivantriAuth", AppErrorMapper.UNABLE_TO_COMPLETE)
+                    )
                 }
             }
         }
@@ -426,34 +470,58 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             _authState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = emailAuthRepository.requestLoginOtp(cleanEmail)) {
-                is OtpRequestResult.Sent -> {
-                    otpRequestHistoryMillis.add(System.currentTimeMillis())
-                    _authState.update {
-                        it.copy(
-                            isLoading = false,
-                            otpRequestedEmail = cleanEmail,
-                            otpInfoMessage = result.message,
-                            otpResendCooldownSeconds = result.cooldownSeconds,
-                            otpExpiresInSeconds = result.expiresInSeconds,
-                            otpFailedAttempts = 0,
-                            errorMessage = null
-                        )
+            try {
+                when (val result = emailAuthRepository.requestLoginOtp(cleanEmail)) {
+                    is OtpRequestResult.Sent -> {
+                        otpRequestHistoryMillis.add(System.currentTimeMillis())
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                otpRequestedEmail = cleanEmail,
+                                otpInfoMessage = result.message,
+                                otpResendCooldownSeconds = result.cooldownSeconds,
+                                otpExpiresInSeconds = result.expiresInSeconds,
+                                otpFailedAttempts = 0,
+                                errorMessage = null
+                            )
+                        }
+                        startOtpCountdowns()
                     }
-                    startOtpCountdowns()
-                }
-                is OtpRequestResult.RateLimited -> {
-                    _authState.update {
-                        it.copy(
-                            isLoading = false,
-                            otpResendCooldownSeconds = result.cooldownSeconds,
-                            errorMessage = result.message
-                        )
+                    is OtpRequestResult.RateLimited -> {
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                otpResendCooldownSeconds = result.cooldownSeconds,
+                                errorMessage = AppErrorMapper.sanitizeUiError(
+                                    result.message,
+                                    AppErrorMapper.UNABLE_TO_COMPLETE,
+                                    "KrishivantriAuth"
+                                )
+                            )
+                        }
+                        startOtpCountdowns()
                     }
-                    startOtpCountdowns()
+                    is OtpRequestResult.Error -> {
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = AppErrorMapper.sanitizeUiError(
+                                    result.message,
+                                    AppErrorMapper.UNABLE_TO_COMPLETE,
+                                    "KrishivantriAuth"
+                                )
+                            )
+                        }
+                    }
                 }
-                is OtpRequestResult.Error -> {
-                    _authState.update { it.copy(isLoading = false, errorMessage = result.message) }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _authState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = AppErrorMapper.mapThrowable(t, "KrishivantriAuth", AppErrorMapper.UNABLE_TO_COMPLETE)
+                    )
                 }
             }
         }
@@ -481,44 +549,59 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             _authState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = emailAuthRepository.verifyLoginOtp(targetEmail, otp)) {
-                is EmailAuthResult.Success -> {
-                    otpCountdownJob?.cancel()
-                    otpCountdownJob = null
-                    _currentUser.value = result.user
-                    _authState.update {
-                        it.copy(
-                            isLoading = false,
-                            otpRequestedEmail = null,
-                            otpInfoMessage = null,
-                            otpResendCooldownSeconds = 0,
-                            otpExpiresInSeconds = 0,
-                            otpFailedAttempts = 0,
-                            errorMessage = null
+            try {
+                when (val result = emailAuthRepository.verifyLoginOtp(targetEmail, otp)) {
+                    is EmailAuthResult.Success -> {
+                        otpCountdownJob?.cancel()
+                        otpCountdownJob = null
+                        _currentUser.value = result.user
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                otpRequestedEmail = null,
+                                otpInfoMessage = null,
+                                otpResendCooldownSeconds = 0,
+                                otpExpiresInSeconds = 0,
+                                otpFailedAttempts = 0,
+                                errorMessage = null
+                            )
+                        }
+                        _mapBookingState.value = MapBookingState(
+                            hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
+                            offlineRegions = _mapBookingState.value.offlineRegions
                         )
+                        if (result.user.role == UserRole.FARMER.apiValue) {
+                            startFarmerSupabaseSync(result.user.id)
+                        }
                     }
-                    _mapBookingState.value = MapBookingState(
-                        hasLocationPermission = locationRepository.hasFineOrCoarsePermission(),
-                        offlineRegions = _mapBookingState.value.offlineRegions
-                    )
-                    if (result.user.role == UserRole.FARMER.apiValue) {
-                        startFarmerSupabaseSync(result.user.id)
+                    is EmailAuthResult.Error -> {
+                        val nextFailed = _authState.value.otpFailedAttempts + 1
+                        val lockedMsg = if (nextFailed >= _authState.value.maxOtpAttempts) {
+                            "Maximum verification attempts reached. Please request a new OTP."
+                        } else {
+                            AppErrorMapper.sanitizeUiError(
+                                result.message,
+                                AppErrorMapper.UNABLE_TO_COMPLETE,
+                                "KrishivantriAuth"
+                            )
+                        }
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                otpFailedAttempts = nextFailed,
+                                errorMessage = lockedMsg
+                            )
+                        }
                     }
                 }
-                is EmailAuthResult.Error -> {
-                    val nextFailed = _authState.value.otpFailedAttempts + 1
-                    val lockedMsg = if (nextFailed >= _authState.value.maxOtpAttempts) {
-                        "Maximum verification attempts reached. Please request a new OTP."
-                    } else {
-                        result.message
-                    }
-                    _authState.update {
-                        it.copy(
-                            isLoading = false,
-                            otpFailedAttempts = nextFailed,
-                            errorMessage = lockedMsg
-                        )
-                    }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _authState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = AppErrorMapper.mapThrowable(t, "KrishivantriAuth", AppErrorMapper.UNABLE_TO_COMPLETE)
+                    )
                 }
             }
         }
@@ -589,27 +672,47 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             _authState.update { it.copy(isLoading = true, errorMessage = null) }
-            val result = if (isSignUp) {
-                repository.registerPilot(
-                    name = name,
-                    phone = phone,
-                    droneType = droneType,
-                    tankCapacity = tankCapacityText.toDouble(),
-                    licenseDocumentUri = licenseUri,
-                    bankUpiId = bankUpiId
-                )
-            } else {
-                repository.loginByRole(phone, UserRole.PILOT)
-            }
-            when (result) {
-                is AuthResult.Success -> {
-                    _currentUser.value = result.user
-                    _authState.update { it.copy(isLoading = false) }
-                    syncPilotLiveLocationTracking(result.user)
-                    startMarketSupabaseSync()
+            try {
+                val result = if (isSignUp) {
+                    repository.registerPilot(
+                        name = name,
+                        phone = phone,
+                        droneType = droneType,
+                        tankCapacity = tankCapacityText.toDouble(),
+                        licenseDocumentUri = licenseUri,
+                        bankUpiId = bankUpiId
+                    )
+                } else {
+                    repository.loginByRole(phone, UserRole.PILOT)
                 }
-                is AuthResult.Error -> {
-                    _authState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                when (result) {
+                    is AuthResult.Success -> {
+                        _currentUser.value = result.user
+                        _authState.update { it.copy(isLoading = false) }
+                        syncPilotLiveLocationTracking(result.user)
+                        startMarketSupabaseSync()
+                    }
+                    is AuthResult.Error -> {
+                        _authState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = AppErrorMapper.sanitizeUiError(
+                                    result.message,
+                                    AppErrorMapper.UNABLE_TO_COMPLETE,
+                                    "KrishivantriAuth"
+                                )
+                            )
+                        }
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _authState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = AppErrorMapper.mapThrowable(t, "KrishivantriAuth", AppErrorMapper.UNABLE_TO_COMPLETE)
+                    )
                 }
             }
         }
@@ -617,12 +720,24 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun submitAdminLogin(phone: String, passcode: String, onFailed: (String) -> Unit) {
         viewModelScope.launch {
-            when (val result = repository.loginAdmin(phone, passcode)) {
-                is AuthResult.Success -> {
-                    _currentUser.value = result.user
-                    startMarketSupabaseSync()
+            try {
+                when (val result = repository.loginAdmin(phone, passcode)) {
+                    is AuthResult.Success -> {
+                        _currentUser.value = result.user
+                        startMarketSupabaseSync()
+                    }
+                    is AuthResult.Error -> onFailed(
+                        AppErrorMapper.sanitizeUiError(
+                            result.message,
+                            AppErrorMapper.UNABLE_TO_COMPLETE,
+                            "KrishivantriAuth"
+                        )
+                    )
                 }
-                is AuthResult.Error -> onFailed(result.message)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                onFailed(AppErrorMapper.mapThrowable(t, "KrishivantriAuth", AppErrorMapper.UNABLE_TO_COMPLETE))
             }
         }
     }
@@ -648,13 +763,25 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             return
         }
         viewModelScope.launch {
-            when (val result = repository.updateFarmerCredentials(user.id, name, phone, farmerIdNumber)) {
-                is AuthResult.Success -> {
-                    _currentUser.value = result.user
-                    _snackbarMessage.value = "Farmer credentials updated successfully."
-                    onSuccess()
+            try {
+                when (val result = repository.updateFarmerCredentials(user.id, name, phone, farmerIdNumber)) {
+                    is AuthResult.Success -> {
+                        _currentUser.value = result.user
+                        _snackbarMessage.value = "Farmer credentials updated successfully."
+                        onSuccess()
+                    }
+                    is AuthResult.Error -> onError(
+                        AppErrorMapper.sanitizeUiError(
+                            result.message,
+                            AppErrorMapper.UNABLE_TO_COMPLETE,
+                            "KrishivantriAuth"
+                        )
+                    )
                 }
-                is AuthResult.Error -> onError(result.message)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                onError(AppErrorMapper.mapThrowable(t, "KrishivantriAuth", AppErrorMapper.UNABLE_TO_COMPLETE))
             }
         }
     }
@@ -804,7 +931,10 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun onMapError(error: String?) {
-        _mapBookingState.update { it.copy(mapErrorMessage = error) }
+        val safeError = error?.let {
+            AppErrorMapper.sanitizeUiError(it, AppErrorMapper.MAP_LOAD_UNAVAILABLE, "KrishivantriMap")
+        }
+        _mapBookingState.update { it.copy(mapErrorMessage = safeError) }
     }
 
     fun retryMapLoad() {
@@ -826,20 +956,31 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         if (query.isEmpty()) return
         viewModelScope.launch {
             _mapBookingState.update { it.copy(isSearchingLocation = true) }
-            val matches = locationRepository.searchLocations(query)
-            val best = matches.firstOrNull()
-            if (best != null) {
-                _mapBookingState.update {
-                    it.copy(
-                        mapCenter = best.point,
-                        resolvedLocationLabel = best.displayName,
-                        locationSuggestions = matches,
-                        cameraFlyNonce = it.cameraFlyNonce + 1,
-                        isSearchingLocation = false
-                    )
+            try {
+                val matches = locationRepository.searchLocations(query)
+                val best = matches.firstOrNull()
+                if (best != null) {
+                    _mapBookingState.update {
+                        it.copy(
+                            mapCenter = best.point,
+                            resolvedLocationLabel = best.displayName,
+                            locationSuggestions = matches,
+                            cameraFlyNonce = it.cameraFlyNonce + 1,
+                            isSearchingLocation = false
+                        )
+                    }
+                } else {
+                    _mapBookingState.update { it.copy(isSearchingLocation = false) }
                 }
-            } else {
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
                 _mapBookingState.update { it.copy(isSearchingLocation = false) }
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(
+                    t,
+                    "KrishivantriMap",
+                    AppErrorMapper.UNABLE_TO_COMPLETE
+                )
             }
         }
     }
@@ -920,19 +1061,30 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         }
         viewModelScope.launch {
             _mapBookingState.update { it.copy(isSavingFarm = true) }
-            val name = state.farmNameInput.ifBlank {
-                "${state.resolvedLocationLabel.substringBefore(",")} Plot"
-            }
-            val saved = farmRepository.saveFarmBoundary(
-                farmerId = user.id,
-                farmName = name,
-                polygonPoints = state.polygonPoints
-            )
-            _mapBookingState.update { it.copy(isSavingFarm = false, farmNameInput = "") }
-            _snackbarMessage.value = if (saved.isSyncedToSupabase) {
-                "Saved '${saved.farmName}' (${saved.areaAcres} ac / ${saved.areaHectares} ha) to My Farms."
-            } else {
-                "Saved '${saved.farmName}' locally (${saved.areaAcres} ac / ${saved.areaHectares} ha). Will sync automatically when online."
+            try {
+                val name = state.farmNameInput.ifBlank {
+                    "${state.resolvedLocationLabel.substringBefore(",")} Plot"
+                }
+                val saved = farmRepository.saveFarmBoundary(
+                    farmerId = user.id,
+                    farmName = name,
+                    polygonPoints = state.polygonPoints
+                )
+                _mapBookingState.update { it.copy(isSavingFarm = false, farmNameInput = "") }
+                _snackbarMessage.value = if (saved.isSyncedToSupabase) {
+                    "Saved '${saved.farmName}' (${saved.areaAcres} ac / ${saved.areaHectares} ha) to My Farms."
+                } else {
+                    "Saved '${saved.farmName}' locally (${saved.areaAcres} ac / ${saved.areaHectares} ha). Will sync automatically when online."
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _mapBookingState.update { it.copy(isSavingFarm = false) }
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(
+                    t,
+                    "KrishivantriFarm",
+                    AppErrorMapper.UNABLE_TO_COMPLETE
+                )
             }
         }
     }
@@ -967,7 +1119,12 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             },
             onError = { err ->
                 _mapBookingState.update { it.copy(offlineDownloadProgress = null) }
-                _snackbarMessage.value = "Offline cache failed: $err"
+                AppErrorMapper.logWarning("KrishivantriMap", "Offline map caching error: $err")
+                _snackbarMessage.value = AppErrorMapper.sanitizeUiError(
+                    err,
+                    AppErrorMapper.OFFLINE_MAP_UNAVAILABLE,
+                    "KrishivantriMap"
+                )
             }
         )
     }
@@ -1116,51 +1273,18 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
             )
         } else {
             viewModelScope.launch {
-                val order = repository.placeOrder(
-                    farmerId = farmer.id,
-                    locationAddress = locationLabel,
-                    polygonPoints = booking.polygonPoints,
-                    paymentMethod = PaymentMethod.CASH
-                )
-                autoSaveBookedBoundaryIfNew(
-                    farmerId = farmer.id,
-                    locationLabel = locationLabel,
-                    preferredName = booking.farmNameInput,
-                    polygonPoints = booking.polygonPoints
-                )
-                _mapBookingState.update {
-                    it.copy(
-                        polygonPoints = emptyList(),
-                        computedAcres = 0.0,
-                        computedHectares = 0.0,
-                        computedAmount = 0.0,
-                        farmNameInput = "",
-                        bookingSuccessOrderId = order.id
-                    )
-                }
-                _snackbarMessage.value = "Cash spray order confirmed for ${order.acresToSpray} acres."
-            }
-        }
-    }
-
-    fun confirmRazorpayPayment(razorpayPaymentId: String? = null) {
-        val sheet = _razorpaySheet.value ?: return
-        val user = _currentUser.value ?: return
-        viewModelScope.launch {
-            when (val purpose = sheet.purpose) {
-                is RazorpayPurpose.FarmerOrderCheckout -> {
+                try {
                     val order = repository.placeOrder(
-                        farmerId = user.id,
-                        locationAddress = purpose.locationAddress,
-                        polygonPoints = purpose.polygonPoints,
-                        paymentMethod = PaymentMethod.ONLINE,
-                        razorpayPaymentId = razorpayPaymentId
+                        farmerId = farmer.id,
+                        locationAddress = locationLabel,
+                        polygonPoints = booking.polygonPoints,
+                        paymentMethod = PaymentMethod.CASH
                     )
                     autoSaveBookedBoundaryIfNew(
-                        farmerId = user.id,
-                        locationLabel = purpose.locationAddress,
-                        preferredName = purpose.farmName,
-                        polygonPoints = purpose.polygonPoints
+                        farmerId = farmer.id,
+                        locationLabel = locationLabel,
+                        preferredName = booking.farmNameInput,
+                        polygonPoints = booking.polygonPoints
                     )
                     _mapBookingState.update {
                         it.copy(
@@ -1172,28 +1296,82 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                             bookingSuccessOrderId = order.id
                         )
                     }
-                    val refSuffix = razorpayPaymentId?.let { " ($it)" }.orEmpty()
-                    _snackbarMessage.value = "Razorpay payment verified$refSuffix. Order placed for ${order.acresToSpray} acres."
-                }
-                is RazorpayPurpose.PilotWalletTopUp -> {
-                    repository.topUpPilotWallet(purpose.pilotId, sheet.amount)
-                    _snackbarMessage.value = "₹${sheet.amount.toInt()} added to your pilot wallet."
-                }
-                is RazorpayPurpose.AgriStoreCheckout -> {
-                    val receipt = AgriStoreOrderReceipt(
-                        orderId = "KV-STR-${(System.currentTimeMillis() % 100000).toString().padStart(5, '0')}",
-                        itemCount = purpose.itemCount,
-                        totalAmount = sheet.amount,
-                        paymentMethod = PaymentMethod.ONLINE,
-                        razorpayPaymentId = razorpayPaymentId
+                    _snackbarMessage.value = "Cash spray order confirmed for ${order.acresToSpray} acres."
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    _snackbarMessage.value = AppErrorMapper.mapThrowable(
+                        t,
+                        "KrishivantriOrder",
+                        AppErrorMapper.UNABLE_TO_COMPLETE
                     )
-                    _agriStoreReceipts.update { listOf(receipt) + it }
-                    _agriStoreCart.value = emptyList()
-                    val refSuffix = razorpayPaymentId?.let { " ($it)" }.orEmpty()
-                    _snackbarMessage.value = "Agri Store payment verified$refSuffix. Order ${receipt.orderId} confirmed."
                 }
             }
-            _razorpaySheet.value = null
+        }
+    }
+
+    fun confirmRazorpayPayment(razorpayPaymentId: String? = null) {
+        val sheet = _razorpaySheet.value ?: return
+        val user = _currentUser.value ?: return
+        viewModelScope.launch {
+            try {
+                when (val purpose = sheet.purpose) {
+                    is RazorpayPurpose.FarmerOrderCheckout -> {
+                        val order = repository.placeOrder(
+                            farmerId = user.id,
+                            locationAddress = purpose.locationAddress,
+                            polygonPoints = purpose.polygonPoints,
+                            paymentMethod = PaymentMethod.ONLINE,
+                            razorpayPaymentId = razorpayPaymentId
+                        )
+                        autoSaveBookedBoundaryIfNew(
+                            farmerId = user.id,
+                            locationLabel = purpose.locationAddress,
+                            preferredName = purpose.farmName,
+                            polygonPoints = purpose.polygonPoints
+                        )
+                        _mapBookingState.update {
+                            it.copy(
+                                polygonPoints = emptyList(),
+                                computedAcres = 0.0,
+                                computedHectares = 0.0,
+                                computedAmount = 0.0,
+                                farmNameInput = "",
+                                bookingSuccessOrderId = order.id
+                            )
+                        }
+                        val refSuffix = razorpayPaymentId?.let { " ($it)" }.orEmpty()
+                        _snackbarMessage.value = "Payment confirmed$refSuffix. Order placed for ${order.acresToSpray} acres."
+                    }
+                    is RazorpayPurpose.PilotWalletTopUp -> {
+                        repository.topUpPilotWallet(purpose.pilotId, sheet.amount)
+                        _snackbarMessage.value = "₹${sheet.amount.toInt()} added to your pilot wallet."
+                    }
+                    is RazorpayPurpose.AgriStoreCheckout -> {
+                        val receipt = AgriStoreOrderReceipt(
+                            orderId = "KV-STR-${(System.currentTimeMillis() % 100000).toString().padStart(5, '0')}",
+                            itemCount = purpose.itemCount,
+                            totalAmount = sheet.amount,
+                            paymentMethod = PaymentMethod.ONLINE,
+                            razorpayPaymentId = razorpayPaymentId
+                        )
+                        _agriStoreReceipts.update { listOf(receipt) + it }
+                        _agriStoreCart.value = emptyList()
+                        val refSuffix = razorpayPaymentId?.let { " ($it)" }.orEmpty()
+                        _snackbarMessage.value = "Payment confirmed$refSuffix. Order ${receipt.orderId} confirmed."
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(
+                    t,
+                    "KrishivantriPayment",
+                    AppErrorMapper.UNABLE_TO_COMPLETE
+                )
+            } finally {
+                _razorpaySheet.value = null
+            }
         }
     }
 
@@ -1228,8 +1406,7 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun onRazorpayPaymentError(code: Int, description: String?) {
         _razorpaySheet.value = null
-        val detail = description?.takeIf { it.isNotBlank() } ?: "Payment cancelled or declined"
-        _snackbarMessage.value = "Razorpay checkout incomplete ($code): $detail"
+        _snackbarMessage.value = AppErrorMapper.mapRazorpayError(code, description)
     }
 
     fun onRazorpayKeyMissing() {
@@ -1272,25 +1449,41 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun ratePilot(orderId: String, stars: Int) {
         viewModelScope.launch {
-            repository.ratePilotForOrder(orderId, stars)
-            _snackbarMessage.value = "Thank you for rating your pilot ($stars★)!"
+            try {
+                repository.ratePilotForOrder(orderId, stars)
+                _snackbarMessage.value = "Thank you for rating your pilot ($stars★)!"
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriOrder")
+            }
         }
     }
 
     fun confirmFarmerJobDone(orderId: String) {
         viewModelScope.launch {
-            when (val result = repository.confirmJobDoneByFarmer(orderId)) {
-                is JobDoneResult.Success -> {
-                    val recipient = result.pilotName ?: "pilot"
-                    _snackbarMessage.value = if (result.amountTransferredToPilot > 0.0) {
-                        "Job done confirmed! ₹${result.amountTransferredToPilot.toInt()} transferred to $recipient's wallet (+1 Harvest Coin)."
-                    } else {
-                        "Job done confirmed! Spraying settled (+1 Harvest Coin)."
+            try {
+                when (val result = repository.confirmJobDoneByFarmer(orderId)) {
+                    is JobDoneResult.Success -> {
+                        val recipient = result.pilotName ?: "pilot"
+                        _snackbarMessage.value = if (result.amountTransferredToPilot > 0.0) {
+                            "Job done confirmed! ₹${result.amountTransferredToPilot.toInt()} transferred to $recipient's wallet (+1 Harvest Coin)."
+                        } else {
+                            "Job done confirmed! Spraying settled (+1 Harvest Coin)."
+                        }
+                    }
+                    is JobDoneResult.Error -> {
+                        _snackbarMessage.value = AppErrorMapper.sanitizeUiError(
+                            result.message,
+                            AppErrorMapper.UNABLE_TO_COMPLETE,
+                            "KrishivantriOrder"
+                        )
                     }
                 }
-                is JobDoneResult.Error -> {
-                    _snackbarMessage.value = result.message
-                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriOrder")
             }
         }
     }
@@ -1301,29 +1494,35 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         val user = _currentUser.value ?: return
         val profile = pilotProfile.value
         viewModelScope.launch {
-            repository.togglePilotOnline(user.id, isOnline)
-            val loc = locationRepository.getCurrentLocationOnce() ?: _mapBookingState.value.currentGpsLocation
-            if (loc != null) {
-                repository.updatePilotLiveLocation(user.id, loc.lat, loc.lng)
-            }
-            val lat = loc?.lat ?: profile?.currentLat ?: _mapBookingState.value.mapCenter.lat
-            val lng = loc?.lng ?: profile?.currentLng ?: _mapBookingState.value.mapCenter.lng
-            mapRepository.publishOperatorLocation(
-                operatorId = user.id,
-                name = user.name,
-                roleType = if (profile?.droneType == "hexacopter") {
-                    OperatorRoleType.DRONE_OPERATOR
-                } else {
-                    OperatorRoleType.DRONE_MITRA
-                },
-                lat = lat,
-                lng = lng,
-                droneType = profile?.droneType ?: "quadcopter",
-                isAvailable = isOnline,
-                headingDegrees = loc?.bearing ?: 0f
-            )
-            if (isOnline) {
-                syncPilotLiveLocationTracking(user)
+            try {
+                repository.togglePilotOnline(user.id, isOnline)
+                val loc = locationRepository.getCurrentLocationOnce() ?: _mapBookingState.value.currentGpsLocation
+                if (loc != null) {
+                    repository.updatePilotLiveLocation(user.id, loc.lat, loc.lng)
+                }
+                val lat = loc?.lat ?: profile?.currentLat ?: _mapBookingState.value.mapCenter.lat
+                val lng = loc?.lng ?: profile?.currentLng ?: _mapBookingState.value.mapCenter.lng
+                mapRepository.publishOperatorLocation(
+                    operatorId = user.id,
+                    name = user.name,
+                    roleType = if (profile?.droneType == "hexacopter") {
+                        OperatorRoleType.DRONE_OPERATOR
+                    } else {
+                        OperatorRoleType.DRONE_MITRA
+                    },
+                    lat = lat,
+                    lng = lng,
+                    droneType = profile?.droneType ?: "quadcopter",
+                    isAvailable = isOnline,
+                    headingDegrees = loc?.bearing ?: 0f
+                )
+                if (isOnline) {
+                    syncPilotLiveLocationTracking(user)
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriPilot")
             }
         }
     }
@@ -1332,41 +1531,51 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
         val user = _currentUser.value ?: return
         val profile = pilotProfile.value
         viewModelScope.launch {
-            val loc = locationRepository.getCurrentLocationOnce() ?: _mapBookingState.value.currentGpsLocation
-            val pilotPoint = loc?.let { LatLngPoint(it.lat, it.lng) }
-            when (val result = repository.acceptOrder(user.id, orderId, pilotPoint)) {
-                is AcceptOrderResult.Success -> {
-                    if (pilotPoint != null) {
-                        mapRepository.publishOperatorLocation(
-                            operatorId = user.id,
-                            name = user.name,
-                            roleType = if (profile?.droneType == DroneType.HEXACOPTER.apiValue) {
-                                OperatorRoleType.DRONE_OPERATOR
-                            } else {
-                                OperatorRoleType.DRONE_MITRA
-                            },
-                            lat = pilotPoint.lat,
-                            lng = pilotPoint.lng,
-                            droneType = profile?.droneType ?: DroneType.QUADCOPTER.apiValue,
-                            isAvailable = profile?.isOnline ?: true,
-                            headingDegrees = loc.bearing
+            try {
+                val loc = locationRepository.getCurrentLocationOnce() ?: _mapBookingState.value.currentGpsLocation
+                val pilotPoint = loc?.let { LatLngPoint(it.lat, it.lng) }
+                when (val result = repository.acceptOrder(user.id, orderId, pilotPoint)) {
+                    is AcceptOrderResult.Success -> {
+                        if (pilotPoint != null) {
+                            mapRepository.publishOperatorLocation(
+                                operatorId = user.id,
+                                name = user.name,
+                                roleType = if (profile?.droneType == DroneType.HEXACOPTER.apiValue) {
+                                    OperatorRoleType.DRONE_OPERATOR
+                                } else {
+                                    OperatorRoleType.DRONE_MITRA
+                                },
+                                lat = pilotPoint.lat,
+                                lng = pilotPoint.lng,
+                                droneType = profile?.droneType ?: DroneType.QUADCOPTER.apiValue,
+                                isAvailable = profile?.isOnline ?: true,
+                                headingDegrees = loc.bearing
+                            )
+                        }
+                        _snackbarMessage.value = if (pilotPoint != null) {
+                            "Mission accepted! Live distance & ETA shared with farmer."
+                        } else {
+                            "Mission accepted! Head to the farmer's field."
+                        }
+                    }
+                    is AcceptOrderResult.InsufficientWallet -> {
+                        _insufficientWalletAlert.value = InsufficientWalletAlert(
+                            requiredCommission = result.requiredCommission,
+                            currentBalance = result.currentBalance
                         )
                     }
-                    _snackbarMessage.value = if (pilotPoint != null) {
-                        "Mission accepted! Live distance & ETA shared with farmer."
-                    } else {
-                        "Mission accepted! Head to the farmer's field."
+                    is AcceptOrderResult.Error -> {
+                        _snackbarMessage.value = AppErrorMapper.sanitizeUiError(
+                            result.message,
+                            AppErrorMapper.UNABLE_TO_COMPLETE,
+                            "KrishivantriPilot"
+                        )
                     }
                 }
-                is AcceptOrderResult.InsufficientWallet -> {
-                    _insufficientWalletAlert.value = InsufficientWalletAlert(
-                        requiredCommission = result.requiredCommission,
-                        currentBalance = result.currentBalance
-                    )
-                }
-                is AcceptOrderResult.Error -> {
-                    _snackbarMessage.value = result.message
-                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriPilot")
             }
         }
     }
@@ -1374,22 +1583,40 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
     fun rejectOrder(orderId: String) {
         val pilotId = _currentUser.value?.id ?: return
         viewModelScope.launch {
-            repository.rejectOrder(pilotId, orderId)
-            _snackbarMessage.value = "Order declined and moved out of your queue."
+            try {
+                repository.rejectOrder(pilotId, orderId)
+                _snackbarMessage.value = "Order declined and moved out of your queue."
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriPilot")
+            }
         }
     }
 
     fun startSpraying(orderId: String) {
         viewModelScope.launch {
-            repository.startSpraying(orderId)
-            _snackbarMessage.value = "Spraying mission started."
+            try {
+                repository.startSpraying(orderId)
+                _snackbarMessage.value = "Spraying mission started."
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriPilot")
+            }
         }
     }
 
     fun completeOrder(orderId: String) {
         viewModelScope.launch {
-            repository.markPilotSprayingCompleted(orderId)
-            _snackbarMessage.value = "Spraying marked finished. Waiting for Farmer 'Job Done' confirmation to credit wallet."
+            try {
+                repository.markPilotSprayingCompleted(orderId)
+                _snackbarMessage.value = "Spraying marked finished. Waiting for Farmer 'Job Done' confirmation to credit wallet."
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriPilot")
+            }
         }
     }
 
@@ -1412,11 +1639,17 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
 
     fun verifyPilotLicense(pilotId: String, verified: Boolean) {
         viewModelScope.launch {
-            repository.setPilotLicenseVerified(pilotId, verified)
-            _snackbarMessage.value = if (verified) {
-                "Pilot license verified for Priority Dispatch."
-            } else {
-                "Pilot license verification revoked."
+            try {
+                repository.setPilotLicenseVerified(pilotId, verified)
+                _snackbarMessage.value = if (verified) {
+                    "Pilot license verified for Priority Dispatch."
+                } else {
+                    "Pilot license verification revoked."
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _snackbarMessage.value = AppErrorMapper.mapThrowable(t, "KrishivantriAdmin")
             }
         }
     }

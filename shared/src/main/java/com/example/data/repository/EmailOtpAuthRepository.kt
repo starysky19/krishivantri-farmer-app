@@ -16,6 +16,7 @@ import com.example.data.remote.SupabaseRefreshTokenRequest
 import com.example.data.remote.SupabaseUserDto
 import com.example.data.remote.SupabaseUserLegacyDto
 import com.example.data.remote.SupabaseVerifyOtpRequest
+import com.example.domain.AppErrorMapper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -121,14 +122,12 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
                     )
                 )
             )
-        } catch (_: IOException) {
-            return@withContext BackendSignUpOutcome.Error(
-                "Network error while creating account. Please check your internet connection."
-            )
+        } catch (e: IOException) {
+            AppErrorMapper.logWarning("KrishivantriAuth", "Network error while creating account", e)
+            return@withContext BackendSignUpOutcome.Error(AppErrorMapper.CONNECTION_ISSUE)
         } catch (e: Exception) {
-            return@withContext BackendSignUpOutcome.Error(
-                e.localizedMessage ?: "Unable to complete registration."
-            )
+            AppErrorMapper.logError("KrishivantriAuth", "Account registration failed", e)
+            return@withContext BackendSignUpOutcome.Error(AppErrorMapper.UNABLE_TO_COMPLETE)
         }
 
         if (response.isSuccessful) {
@@ -152,22 +151,25 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
         }
 
         if (response.code() == 429 || normalizedErr.contains("rate_limit")) {
+            AppErrorMapper.logWarning("KrishivantriAuth", "Registration rate limited (HTTP ${response.code()})")
             return@withContext BackendSignUpOutcome.Error(
                 "Too many registration attempts. Please wait a minute and try again."
             )
         }
 
-        return@withContext BackendSignUpOutcome.Error(
-            "Registration could not be completed right now (HTTP ${response.code()}). Please try again."
+        AppErrorMapper.logWarning(
+            "KrishivantriAuth",
+            "Registration HTTP ${response.code()}: ${errBody.take(180)}"
         )
+        return@withContext BackendSignUpOutcome.Error(AppErrorMapper.UNABLE_TO_COMPLETE)
     }
 
     override suspend fun requestOtp(email: String, allowCreateUser: Boolean): OtpRequestResult =
         withContext(Dispatchers.IO) {
-            val authApi = SupabaseClient.authApi
-                ?: return@withContext OtpRequestResult.Error(
-                    "Cloud authentication service is not configured."
-                )
+            val authApi = SupabaseClient.authApi ?: run {
+                AppErrorMapper.logWarning("KrishivantriAuth", "Supabase authApi is not configured.")
+                return@withContext OtpRequestResult.Error(AppErrorMapper.SERVICE_UNAVAILABLE)
+            }
 
             val response = try {
                 authApi.requestOtp(
@@ -176,14 +178,12 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
                         create_user = allowCreateUser
                     )
                 )
-            } catch (_: IOException) {
-                return@withContext OtpRequestResult.Error(
-                    "Unable to reach authentication server. Check your internet connection."
-                )
-            } catch (_: Exception) {
-                return@withContext OtpRequestResult.Error(
-                    "Unable to send OTP right now. Please try again."
-                )
+            } catch (e: IOException) {
+                AppErrorMapper.logWarning("KrishivantriAuth", "Network error requesting OTP", e)
+                return@withContext OtpRequestResult.Error(AppErrorMapper.CONNECTION_ISSUE)
+            } catch (e: Exception) {
+                AppErrorMapper.logError("KrishivantriAuth", "Error requesting OTP", e)
+                return@withContext OtpRequestResult.Error(AppErrorMapper.UNABLE_TO_COMPLETE)
             }
 
             if (response.isSuccessful) {
@@ -198,6 +198,7 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
             val lower = errBody.lowercase(Locale.ROOT)
 
             if (response.code() == 429 || lower.contains("over_email_send_rate_limit") || lower.contains("rate_limit")) {
+                AppErrorMapper.logWarning("KrishivantriAuth", "OTP request rate limited (HTTP ${response.code()})")
                 return@withContext OtpRequestResult.RateLimited(
                     message = "Please wait 60 seconds before requesting another OTP.",
                     cooldownSeconds = OtpRequestResult.DEFAULT_COOLDOWN_SECONDS
@@ -213,6 +214,10 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
                 )
             }
 
+            AppErrorMapper.logWarning(
+                "KrishivantriAuth",
+                "OTP request failed HTTP ${response.code()}: ${errBody.take(180)}"
+            )
             return@withContext OtpRequestResult.Error(
                 "Unable to send OTP email right now. Please try again shortly."
             )
@@ -220,10 +225,10 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
 
     override suspend fun verifyOtp(email: String, otp: String): BackendVerifyOutcome =
         withContext(Dispatchers.IO) {
-            val authApi = SupabaseClient.authApi
-                ?: return@withContext BackendVerifyOutcome.Error(
-                    "Cloud authentication service is not configured."
-                )
+            val authApi = SupabaseClient.authApi ?: run {
+                AppErrorMapper.logWarning("KrishivantriAuth", "Supabase authApi is not configured.")
+                return@withContext BackendVerifyOutcome.Error(AppErrorMapper.SERVICE_UNAVAILABLE)
+            }
 
             val typesToTry = listOf("email", "signup", "magiclink")
             for (otpType in typesToTry) {
@@ -235,14 +240,12 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
                             type = otpType
                         )
                     )
-                } catch (_: IOException) {
-                    return@withContext BackendVerifyOutcome.Error(
-                        "Unable to reach authentication server. Check your internet connection."
-                    )
-                } catch (_: Exception) {
-                    return@withContext BackendVerifyOutcome.Error(
-                        "Unable to verify OTP right now. Please try again."
-                    )
+                } catch (e: IOException) {
+                    AppErrorMapper.logWarning("KrishivantriAuth", "Network error verifying OTP", e)
+                    return@withContext BackendVerifyOutcome.Error(AppErrorMapper.CONNECTION_ISSUE)
+                } catch (e: Exception) {
+                    AppErrorMapper.logError("KrishivantriAuth", "Error verifying OTP", e)
+                    return@withContext BackendVerifyOutcome.Error(AppErrorMapper.UNABLE_TO_COMPLETE)
                 }
 
                 if (response.isSuccessful) {
@@ -261,6 +264,16 @@ class SupabaseEmailOtpBackend : EmailOtpBackend {
                             expiresAtEpochSec = expiresAt
                         )
                     }
+                } else if (response.code() == 429) {
+                    AppErrorMapper.logWarning("KrishivantriAuth", "OTP verify rate limited (HTTP 429)")
+                    return@withContext BackendVerifyOutcome.Error(
+                        "Too many verification attempts. Please wait a minute and request a new OTP."
+                    )
+                } else {
+                    AppErrorMapper.logWarning(
+                        "KrishivantriAuth",
+                        "OTP verify rejected for type=$otpType (HTTP ${response.code()})"
+                    )
                 }
             }
 
@@ -544,8 +557,14 @@ class EmailOtpAuthRepository(
         // Only allow auto-create in auth.users if the farmer already exists in public.users / Room
         val knownFarmerInPublicDb = dao.getUserByEmail(cleanEmail) != null || withContext(Dispatchers.IO) {
             runCatching {
-                val resp = SupabaseClient.api?.getUsersByEmail("eq.$cleanEmail")
-                resp?.isSuccessful == true && !resp.body().isNullOrEmpty()
+                val api = SupabaseClient.api ?: return@runCatching false
+                val exact = api.getUsersByEmail("eq.$cleanEmail")
+                if (exact.isSuccessful && !exact.body().isNullOrEmpty()) {
+                    true
+                } else {
+                    val ci = api.getUsersByEmail("ilike.$cleanEmail")
+                    ci.isSuccessful && !ci.body().isNullOrEmpty()
+                }
             }.getOrDefault(false)
         }
 
@@ -567,8 +586,12 @@ class EmailOtpAuthRepository(
                 val user = when (val hydrated = hydrateVerifiedFarmer(outcome)) {
                     is HydrateFarmerResult.Success -> hydrated.user
                     is HydrateFarmerResult.WrongRole -> {
+                        AppErrorMapper.logWarning(
+                            "KrishivantriAuth",
+                            "Role mismatch on farmer login: actualRole=${hydrated.actualRole}"
+                        )
                         return EmailAuthResult.Error(
-                            "This email (${outcome.email}) is registered as a '${hydrated.actualRole}' account, not a Farmer account. Please sign in with a registered Farmer email."
+                            "Unable to sign in with this email. Please use a registered Farmer account."
                         )
                     }
                 }

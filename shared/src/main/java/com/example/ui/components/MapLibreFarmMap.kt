@@ -35,6 +35,7 @@ import com.example.data.model.MapStyleType
 import com.example.data.model.OperatorLocationMarker
 import com.example.data.model.OrderWithDetails
 import com.example.data.repository.MapRepository
+import com.example.domain.AppErrorMapper
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -171,7 +172,8 @@ fun MapLibreFarmMap(
         mapView.addOnDidFailLoadingMapListener { errorMessage ->
             latestOnLoading(false)
             if (loadedStyle == null) {
-                latestOnError(errorMessage.ifBlank { "Unable to load map tiles. Check network and retry." })
+                AppErrorMapper.logWarning("KrishivantriMap", "Map failed to load: $errorMessage")
+                latestOnError(AppErrorMapper.MAP_LOAD_UNAVAILABLE)
             }
         }
 

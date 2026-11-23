@@ -12,6 +12,7 @@ import com.example.data.model.OperatorRoleType
 import com.example.data.model.OrderWithDetails
 import com.example.data.remote.SupabaseClient
 import com.example.data.remote.SupabaseOperatorLocationDto
+import com.example.domain.AppErrorMapper
 import com.example.domain.GeoPolygonCalculator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -590,22 +591,32 @@ class MapRepository(
                             }
 
                             override fun onError(error: OfflineRegionError) {
-                                onError(error.message)
+                                AppErrorMapper.logWarning(
+                                    "KrishivantriMap",
+                                    "Offline region error (${error.reason}): ${error.message}"
+                                )
+                                onError(AppErrorMapper.OFFLINE_MAP_UNAVAILABLE)
                             }
 
                             override fun mapboxTileCountLimitExceeded(limit: Long) {
-                                onError("Offline tile limit exceeded ($limit tiles).")
+                                AppErrorMapper.logWarning(
+                                    "KrishivantriMap",
+                                    "Offline tile limit exceeded: $limit"
+                                )
+                                onError("This map area is too large to save offline. Please zoom in and try again.")
                             }
                         })
                     }
 
                     override fun onError(error: String) {
-                        onError(error)
+                        AppErrorMapper.logWarning("KrishivantriMap", "Create offline region error: $error")
+                        onError(AppErrorMapper.OFFLINE_MAP_UNAVAILABLE)
                     }
                 }
             )
         } catch (t: Throwable) {
-            onError(t.message ?: "Offline map caching unavailable.")
+            AppErrorMapper.logError("KrishivantriMap", "Offline map caching failed", t)
+            onError(AppErrorMapper.OFFLINE_MAP_UNAVAILABLE)
         }
     }
 }

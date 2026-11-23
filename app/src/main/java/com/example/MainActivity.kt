@@ -27,7 +27,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.UserRole
 import com.example.data.remote.KrishivantriRuntimeConfig
+import com.example.domain.AppErrorMapper
 import com.example.ui.components.KrishivantriBrandMark
+import com.example.ui.components.OnlinePaymentOption
 import com.example.ui.components.RazorpayCheckoutSheet
 import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.AuthScreen
@@ -68,7 +70,10 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
         }
     }
 
-    private fun launchRazorpayCheckout(sheet: RazorpaySheetState) {
+    private fun launchRazorpayCheckout(
+        sheet: RazorpaySheetState,
+        selectedOption: OnlinePaymentOption
+    ) {
         if (!KrishivantriRuntimeConfig.isRazorpayConfigured()) {
             viewModel.onRazorpayKeyMissing()
             return
@@ -91,17 +96,22 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
                 put("retry", retryObj)
 
                 val prefill = JSONObject()
+                viewModel.currentUser.value?.name?.takeIf { it.isNotBlank() }?.let {
+                    prefill.put("name", it)
+                }
                 viewModel.currentUser.value?.phone?.takeIf { it.isNotBlank() }?.let {
                     prefill.put("contact", it)
                 }
                 viewModel.currentUser.value?.email?.takeIf { it.isNotBlank() }?.let {
                     prefill.put("email", it)
                 }
+                prefill.put("method", selectedOption.razorpayMethod)
                 put("prefill", prefill)
             }
             checkout.open(this, options)
         }.onFailure { err ->
-            viewModel.onRazorpayPaymentError(-1, err.localizedMessage)
+            AppErrorMapper.logError("KrishivantriPayment", "Failed to launch Razorpay checkout", err)
+            viewModel.onRazorpayPaymentError(-1, null)
         }
     }
 
@@ -117,7 +127,7 @@ class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
 @Composable
 fun KrishivantriApp(
     viewModel: KrishivantriViewModel,
-    onLaunchRazorpay: (RazorpaySheetState) -> Unit
+    onLaunchRazorpay: (RazorpaySheetState, OnlinePaymentOption) -> Unit
 ) {
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
@@ -262,7 +272,7 @@ fun KrishivantriApp(
     razorpaySheet?.let { sheet ->
         RazorpayCheckoutSheet(
             state = sheet,
-            onConfirmPayment = { onLaunchRazorpay(sheet) },
+            onConfirmPayment = { selectedOption -> onLaunchRazorpay(sheet, selectedOption) },
             onDismiss = viewModel::dismissRazorpaySheet
         )
     }

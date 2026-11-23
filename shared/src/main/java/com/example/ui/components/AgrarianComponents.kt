@@ -20,9 +20,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CreditCard
 import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -32,7 +36,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -160,16 +164,35 @@ fun MiniPolygonPreview(
     }
 }
 
+enum class OnlinePaymentOption(
+    val label: String,
+    val razorpayMethod: String,
+    val testTagId: String
+) {
+    GPAY("GPay", "upi", "payment_option_gpay"),
+    PHONEPE("PhonePe", "upi", "payment_option_phonepe"),
+    PAYTM("Paytm", "upi", "payment_option_paytm"),
+    UPI_QR("UPI QR", "upi", "payment_option_upi_qr"),
+    CARDS("Cards", "card", "payment_option_cards"),
+    NETBANKING("Netbanking", "netbanking", "payment_option_netbanking");
+
+    fun icon(): ImageVector = when (this) {
+        GPAY, PHONEPE, PAYTM -> Icons.Rounded.AccountBalanceWallet
+        UPI_QR -> Icons.Rounded.QrCode2
+        CARDS -> Icons.Rounded.CreditCard
+        NETBANKING -> Icons.Rounded.AccountBalance
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RazorpayCheckoutSheet(
     state: RazorpaySheetState,
-    onConfirmPayment: () -> Unit,
+    onConfirmPayment: (OnlinePaymentOption) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selectedUpiApp by remember { mutableStateOf("GPay UPI") }
-    var upiHandle by remember { mutableStateOf("farmer@okicici") }
-    val upiOptions = listOf("GPay UPI", "PhonePe", "Paytm", "UPI ID")
+    var selectedOption by remember { mutableStateOf(OnlinePaymentOption.GPAY) }
+    val optionRows = remember { OnlinePaymentOption.entries.chunked(3) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -221,53 +244,67 @@ fun RazorpayCheckoutSheet(
             }
 
             Text(
-                text = "Select UPI Method",
+                text = "Select Payment Method",
                 style = MaterialTheme.typography.labelLarge
             )
 
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                upiOptions.forEach { option ->
-                    val isSelected = selectedUpiApp == option
-                    val bgColor by animateColorAsState(
-                        if (isSelected) SoftSage else MaterialTheme.colorScheme.surfaceVariant,
-                        label = "upiChipColor"
-                    )
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { selectedUpiApp = option }
-                            .border(
-                                width = if (isSelected) 1.5.dp else 1.dp,
-                                color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline,
-                                shape = RoundedCornerShape(12.dp)
-                            ),
-                        color = bgColor
+                optionRows.forEach { rowOptions ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = option.replace(" UPI", ""),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurface
+                        rowOptions.forEach { option ->
+                            val isSelected = selectedOption == option
+                            val bgColor by animateColorAsState(
+                                if (isSelected) SoftSage else MaterialTheme.colorScheme.surfaceVariant,
+                                label = "paymentOptionBgColor"
                             )
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(54.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { selectedOption = option }
+                                    .border(
+                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                        color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.outline,
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                    .testTag(option.testTagId),
+                                color = bgColor
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = option.icon(),
+                                        contentDescription = null,
+                                        tint = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = option.label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
-
-            OutlinedTextField(
-                value = upiHandle,
-                onValueChange = { upiHandle = it },
-                label = { Text("UPI VPA / Handle") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
-            )
 
             if (state.purpose is RazorpayPurpose.FarmerOrderCheckout) {
                 Surface(
@@ -296,9 +333,9 @@ fun RazorpayCheckoutSheet(
                     modifier = Modifier.size(16.dp)
                 )
                 val gatewayLabel = if (com.example.data.remote.KrishivantriRuntimeConfig.isRazorpayConfigured()) {
-                    "Razorpay Checkout • Encrypted UPI & Cards"
+                    "Razorpay Checkout • UPI, QR, Cards & Netbanking"
                 } else {
-                    "Secure UPI & Card Checkout • Instant Payment"
+                    "Secure Checkout • UPI, QR, Cards & Netbanking"
                 }
                 Text(
                     text = gatewayLabel,
@@ -308,7 +345,7 @@ fun RazorpayCheckoutSheet(
             }
 
             Button(
-                onClick = onConfirmPayment,
+                onClick = { onConfirmPayment(selectedOption) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp)
@@ -323,7 +360,7 @@ fun RazorpayCheckoutSheet(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "Pay ${formatInr(state.amount)} via $selectedUpiApp",
+                    text = "Pay ${formatInr(state.amount)} via ${selectedOption.label}",
                     style = MaterialTheme.typography.labelLarge
                 )
             }

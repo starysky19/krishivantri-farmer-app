@@ -56,7 +56,10 @@ class SupabaseClientTest {
 
         val status = SupabaseClient.checkConnection()
         assertTrue(status is SupabaseConnectionStatus.MissingConfig)
-        assertEquals("SUPABASE_ANON_KEY", (status as SupabaseConnectionStatus.MissingConfig).missingKey)
+        val missing = status as SupabaseConnectionStatus.MissingConfig
+        assertEquals("SUPABASE_ANON_KEY", missing.missingKey)
+        assertFalse(missing.message.contains("SUPABASE_ANON_KEY"))
+        assertFalse(missing.message.contains("Secrets"))
     }
 
     @Test
@@ -74,6 +77,9 @@ class SupabaseClientTest {
 
         val status = SupabaseClient.checkConnection()
         assertTrue(status is SupabaseConnectionStatus.MissingConfig)
-        assertEquals("SUPABASE_URL", (status as SupabaseConnectionStatus.MissingConfig).missingKey)
+        val missing = status as SupabaseConnectionStatus.MissingConfig
+        assertEquals("SUPABASE_URL", missing.missingKey)
+        assertFalse(missing.message.contains("SUPABASE_URL"))
+        assertFalse(missing.message.contains("Secrets"))
     }
 }

@@ -1,5 +1,6 @@
 package com.example.data.remote
 
+import com.example.domain.AppErrorMapper
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -7,6 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
@@ -411,8 +413,10 @@ data class SupabaseAuthSignUpRequest(
 )
 
 /**
- * Intentionally omits email_redirect_to / code_challenge so Supabase Auth
- * generates a 6-digit numeric OTP token ({{ .Token }}) instead of a redirect/PKCE link.
+ * Triggers Supabase Auth email OTP delivery (`POST auth/v1/otp`).
+ * Omits redirect/PKCE fields; note that Supabase's server-side Email Templates
+ * ("Magic Link" / "Confirm signup") must render `{{ .Token }}` (without `{{ .ConfirmationURL }}`)
+ * for the delivered email to display a 6-digit numeric OTP instead of a login link.
  */
 @JsonClass(generateAdapter = true)
 data class SupabaseOtpRequest(
@@ -523,22 +527,27 @@ object SupabaseClient {
 
     suspend fun checkConnection(): SupabaseConnectionStatus = withContext(Dispatchers.IO) {
         if (!isUrlConfigured()) {
+            AppErrorMapper.logWarning("KrishivantriCloud", "SUPABASE_URL is missing or placeholder.")
             return@withContext SupabaseConnectionStatus.MissingConfig(
                 missingKey = "SUPABASE_URL",
-                message = "SUPABASE_URL is missing or placeholder in AI Studio Secrets."
+                message = AppErrorMapper.SERVICE_UNAVAILABLE
             )
         }
         if (!isKeyConfigured()) {
+            AppErrorMapper.logWarning("KrishivantriCloud", "SUPABASE_ANON_KEY is missing.")
             return@withContext SupabaseConnectionStatus.MissingConfig(
                 missingKey = "SUPABASE_ANON_KEY",
-                message = "SUPABASE_ANON_KEY is missing in AI Studio Secrets. Add your Supabase anon/publishable key to enable cloud sync."
+                message = AppErrorMapper.SERVICE_UNAVAILABLE
             )
         }
         val endpoint = normalizedBaseUrl()
-        val service = api ?: return@withContext SupabaseConnectionStatus.Error(
-            httpCode = null,
-            message = "Invalid Supabase URL: $endpoint"
-        )
+        val service = api ?: run {
+            AppErrorMapper.logWarning("KrishivantriCloud", "Invalid Supabase URL: $endpoint")
+            return@withContext SupabaseConnectionStatus.Error(
+                httpCode = null,
+                message = AppErrorMapper.SERVICE_UNAVAILABLE
+            )
+        }
         try {
             val response = service.pingUsers()
             if (response.isSuccessful) {
@@ -547,18 +556,26 @@ object SupabaseClient {
                 val rawErr = runCatching { response.errorBody()?.string()?.trim() }.getOrNull()
                     ?.take(180)
                     .orEmpty()
-                val detailSuffix = if (rawErr.isNotBlank()) " ($rawErr)" else ""
-                val msg = when (response.code()) {
-                    401, 403 -> "Authentication rejected (HTTP ${response.code()}). Verify SUPABASE_ANON_KEY and RLS policies.$detailSuffix"
-                    404 -> "Table 'users' not found (HTTP 404). Run backend/supabase_schema.sql in Supabase SQL Editor.$detailSuffix"
-                    else -> "Supabase returned HTTP ${response.code()}: ${response.message()}$detailSuffix"
-                }
-                SupabaseConnectionStatus.Error(httpCode = response.code(), message = msg)
+                AppErrorMapper.logWarning(
+                    "KrishivantriCloud",
+                    "Supabase ping failed HTTP ${response.code()} (${response.message()}): $rawErr"
+                )
+                SupabaseConnectionStatus.Error(
+                    httpCode = response.code(),
+                    message = AppErrorMapper.UNABLE_TO_COMPLETE
+                )
             }
-        } catch (e: Exception) {
+        } catch (e: IOException) {
+            AppErrorMapper.logWarning("KrishivantriCloud", "Cannot reach Supabase ($endpoint)", e)
             SupabaseConnectionStatus.Error(
                 httpCode = null,
-                message = "Cannot reach Supabase ($endpoint): ${e.localizedMessage ?: "Network error"}"
+                message = AppErrorMapper.CONNECTION_ISSUE
+            )
+        } catch (e: Exception) {
+            AppErrorMapper.logError("KrishivantriCloud", "Supabase check failed ($endpoint)", e)
+            SupabaseConnectionStatus.Error(
+                httpCode = null,
+                message = AppErrorMapper.UNABLE_TO_COMPLETE
             )
         }
     }

@@ -29,12 +29,15 @@ import com.example.data.remote.KrishivantriRuntimeConfig
 import com.example.data.remote.SupabaseConnectionStatus
 import com.example.data.repository.MapRepository
 import com.example.domain.GeoPolygonCalculator
+import com.example.ui.components.OnlinePaymentOption
+import com.example.ui.components.RazorpayCheckoutSheet
 import com.example.ui.screens.FarmerDashboardScreen
 import com.example.ui.theme.KrishivantriTheme
 import com.example.ui.viewmodel.DatabaseConnectionUiState
 import com.example.ui.viewmodel.KrishivantriViewModel
 import com.example.ui.viewmodel.MapBookingState
 import com.example.ui.viewmodel.RazorpayPurpose
+import com.example.ui.viewmodel.RazorpaySheetState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -253,5 +256,41 @@ class FarmerRedesignTest {
         } finally {
             db.close()
         }
+    }
+
+    @Test
+    fun `razorpayCheckoutSheet lets farmer pick UPI app QR cards or netbanking without entering UPI ID`() {
+        var confirmedOption: OnlinePaymentOption? = null
+        composeRule.setContent {
+            KrishivantriTheme {
+                RazorpayCheckoutSheet(
+                    state = RazorpaySheetState(
+                        title = "Krishivantri Spray Booking",
+                        subtitle = "3.8 acres • Nashik",
+                        amount = 1900.0,
+                        purpose = RazorpayPurpose.FarmerOrderCheckout(
+                            locationAddress = "Nashik",
+                            polygonPoints = emptyList()
+                        )
+                    ),
+                    onConfirmPayment = { confirmedOption = it },
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("UPI VPA / Handle").assertDoesNotExist()
+        composeRule.onNodeWithTag("payment_option_gpay").assertIsDisplayed()
+        composeRule.onNodeWithTag("payment_option_phonepe").assertIsDisplayed()
+        composeRule.onNodeWithTag("payment_option_paytm").assertIsDisplayed()
+        composeRule.onNodeWithTag("payment_option_upi_qr").assertIsDisplayed()
+        composeRule.onNodeWithTag("payment_option_cards").assertIsDisplayed()
+        composeRule.onNodeWithTag("payment_option_netbanking").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("payment_option_netbanking").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("razorpay_pay_button").performClick()
+        assertEquals(OnlinePaymentOption.NETBANKING, confirmedOption)
     }
 }
