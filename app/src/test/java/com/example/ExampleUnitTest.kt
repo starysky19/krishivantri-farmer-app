@@ -84,5 +84,23 @@ class ExampleUnitTest {
       AppErrorMapper.mapThrowable(IllegalStateException("SQLiteConstraintException"))
     )
   }
+
+  @Test
+  fun razorpaySheetState_preservesPurposeWhenHidingModalForGatewayLaunch() {
+    val initial = com.example.ui.viewmodel.RazorpaySheetState(
+      title = "Krishivantri Spray Booking",
+      subtitle = "2.5 acres • Nashik",
+      amount = 1125.0,
+      purpose = com.example.ui.viewmodel.RazorpayPurpose.AgriStoreCheckout(
+        itemCount = 2,
+        summaryLabel = "2x Neem"
+      )
+    )
+    assertFalse(initial.isAwaitingGatewayResult)
+    val launched = initial.copy(isAwaitingGatewayResult = true)
+    assertTrue(launched.isAwaitingGatewayResult)
+    assertEquals(1125.0, launched.amount, 0.001)
+    assertEquals(initial.purpose, launched.purpose)
+  }
 }
 

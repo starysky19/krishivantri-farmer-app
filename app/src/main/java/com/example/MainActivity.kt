@@ -19,7 +19,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -269,10 +272,25 @@ fun KrishivantriApp(
         }
     }
 
-    razorpaySheet?.let { sheet ->
+    var pendingCheckoutLaunch by remember {
+        mutableStateOf<Pair<RazorpaySheetState, OnlinePaymentOption>?>(null)
+    }
+
+    LaunchedEffect(pendingCheckoutLaunch) {
+        val pending = pendingCheckoutLaunch ?: return@LaunchedEffect
+        // Let the ModalBottomSheet Dialog Window finish detaching its Surface before starting CheckoutActivity.
+        withFrameNanos { }
+        pendingCheckoutLaunch = null
+        onLaunchRazorpay(pending.first, pending.second)
+    }
+
+    razorpaySheet?.takeIf { !it.isAwaitingGatewayResult }?.let { sheet ->
         RazorpayCheckoutSheet(
             state = sheet,
-            onConfirmPayment = { selectedOption -> onLaunchRazorpay(sheet, selectedOption) },
+            onConfirmPayment = { selectedOption ->
+                pendingCheckoutLaunch = sheet to selectedOption
+                viewModel.markRazorpayGatewayLaunched()
+            },
             onDismiss = viewModel::dismissRazorpaySheet
         )
     }

@@ -1,7 +1,9 @@
 package com.example.ui.components
 
 import android.annotation.SuppressLint
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -31,9 +33,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.model.FarmBoundaryEntity
 import com.example.data.model.LatLngPoint
+import com.example.data.model.LocationSnapshot
 import com.example.data.model.MapStyleType
 import com.example.data.model.OperatorLocationMarker
 import com.example.data.model.OrderWithDetails
+import com.example.data.repository.LocationRepository
 import com.example.data.repository.MapRepository
 import com.example.domain.AppErrorMapper
 import org.maplibre.android.MapLibre
@@ -133,6 +137,7 @@ fun MapLibreFarmMap(
             onCreate(null)
         }
     }
+    val lifecycleTracker = remember(mapView) { MapViewLifecycleTracker(mapView) }
 
     val latestOnTap by rememberUpdatedState(onMapTapPoint)
     val latestOnUpdatePoint by rememberUpdatedState(onUpdateBoundaryPoint)
@@ -144,24 +149,46 @@ fun MapLibreFarmMap(
     var mapLibreMap by remember { mutableStateOf<MapLibreMap?>(null) }
     var loadedStyle by remember { mutableStateOf<Style?>(null) }
     var draggingVertexIndex by remember { mutableIntStateOf(-1) }
+    var lastAreaBadgeLabel by remember { mutableStateOf<String?>(null) }
 
-    DisposableEffect(lifecycleOwner, mapView) {
+    DisposableEffect(lifecycleOwner, mapView, context) {
+        val appContext = context.applicationContext
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> mapView.onStart()
-                Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                Lifecycle.Event.ON_STOP -> mapView.onStop()
-                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
+                Lifecycle.Event.ON_START -> lifecycleTracker.dispatchStart()
+                Lifecycle.Event.ON_RESUME -> lifecycleTracker.dispatchResume()
+                Lifecycle.Event.ON_PAUSE -> lifecycleTracker.dispatchPause()
+                Lifecycle.Event.ON_STOP -> lifecycleTracker.dispatchStop()
+                Lifecycle.Event.ON_DESTROY -> lifecycleTracker.dispatchDestroy()
                 else -> Unit
             }
         }
+        val memoryCallback = object : ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) {
+                if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ||
+                    level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+                    level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                ) {
+                    lifecycleTracker.dispatchLowMemory()
+                }
+            }
+
+            override fun onConfigurationChanged(newConfig: Configuration) = Unit
+
+            @Deprecated("Deprecated in Java")
+            override fun onLowMemory() {
+                lifecycleTracker.dispatchLowMemory()
+            }
+        }
+
         lifecycleOwner.lifecycle.addObserver(observer)
+        runCatching { appContext.registerComponentCallbacks(memoryCallback) }
+        lifecycleTracker.syncWithCurrentState(lifecycleOwner.lifecycle.currentState)
+
         onDispose {
+            runCatching { appContext.unregisterComponentCallbacks(memoryCallback) }
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onPause()
-            mapView.onStop()
-            mapView.onDestroy()
+            lifecycleTracker.dispatchDestroy()
         }
     }
 
@@ -211,14 +238,15 @@ fun MapLibreFarmMap(
     // Apply or retry MapLibre Style (Hybrid / Satellite / Standard)
     LaunchedEffect(mapLibreMap, styleType, styleRetryNonce) {
         val map = mapLibreMap ?: return@LaunchedEffect
-        if (mapView.isDestroyed) return@LaunchedEffect
+        if (lifecycleTracker.isDestroyed || mapView.isDestroyed) return@LaunchedEffect
         latestOnLoading(true)
         latestOnError(null)
         loadedStyle = null
+        lastAreaBadgeLabel = null
 
         val styleBuilder = mapRepository.getMapLibreStyleBuilder(styleType)
         map.setStyle(styleBuilder) { style ->
-            if (mapView.isDestroyed) return@setStyle
+            if (lifecycleTracker.isDestroyed || mapView.isDestroyed) return@setStyle
             setupCustomGeoJsonLayers(context, style, styleType)
             loadedStyle = style
             latestOnLoading(false)
@@ -226,12 +254,29 @@ fun MapLibreFarmMap(
         }
     }
 
-    // Activate native GPS LocationComponent when permission & style are ready
+    // Activate native GPS LocationComponent when permission & style are ready without invoking
+    // MapLibre's default LocationEngine (which logs an exception when last known location is null).
     LaunchedEffect(mapLibreMap, loadedStyle, hasLocationPermission) {
         val map = mapLibreMap ?: return@LaunchedEffect
         val style = loadedStyle ?: return@LaunchedEffect
-        if (hasLocationPermission) {
-            activateLocationComponentSafely(context, map, style)
+        if (lifecycleTracker.isDestroyed || mapView.isDestroyed) return@LaunchedEffect
+        if (!hasLocationPermission) return@LaunchedEffect
+
+        val locRepo = LocationRepository(context.applicationContext)
+        if (!locRepo.hasFineOrCoarsePermission()) return@LaunchedEffect
+
+        activateLocationComponentSafely(context, map, style)
+
+        runCatching { locRepo.getCurrentLocationOnce() }.getOrNull()?.let { snap ->
+            if (!lifecycleTracker.isDestroyed && !mapView.isDestroyed && map.locationComponent.isLocationComponentActivated) {
+                runCatching { map.locationComponent.forceLocationUpdate(snap.toAndroidLocation()) }
+            }
+        }
+
+        locRepo.observeLocationUpdates(highPrecisionForDrawing = true).collect { snap ->
+            if (!lifecycleTracker.isDestroyed && !mapView.isDestroyed && map.locationComponent.isLocationComponentActivated) {
+                runCatching { map.locationComponent.forceLocationUpdate(snap.toAndroidLocation()) }
+            }
         }
     }
 
@@ -246,6 +291,7 @@ fun MapLibreFarmMap(
         operators
     ) {
         val style = loadedStyle ?: return@LaunchedEffect
+        if (lifecycleTracker.isDestroyed || mapView.isDestroyed) return@LaunchedEffect
         if (drawingPoints.size >= 3 && computedAcres > 0.0) {
             val areaLabel = String.format(
                 Locale.US,
@@ -253,7 +299,10 @@ fun MapLibreFarmMap(
                 computedHectares,
                 computedAcres
             )
-            style.addImage(ICON_AREA_BADGE, createAreaPillBitmap(context, areaLabel))
+            if (areaLabel != lastAreaBadgeLabel) {
+                style.addImage(ICON_AREA_BADGE, createAreaPillBitmap(context, areaLabel))
+                lastAreaBadgeLabel = areaLabel
+            }
         }
         style.getSourceAs<GeoJsonSource>(SOURCE_DRAWING)?.setGeoJson(
             mapRepository.buildDrawingPolygonFeatureCollection(drawingPoints)
@@ -346,8 +395,76 @@ fun MapLibreFarmMap(
                     false
                 }
             }
+        },
+        onRelease = {
+            lifecycleTracker.dispatchDestroy()
         }
     )
+}
+
+private class MapViewLifecycleTracker(private val mapView: MapView) {
+    private var started = false
+    private var resumed = false
+    var isDestroyed: Boolean = false
+        private set
+
+    fun syncWithCurrentState(currentState: Lifecycle.State) {
+        if (isDestroyed || mapView.isDestroyed) return
+        if (currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            dispatchStart()
+        }
+        if (currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            dispatchResume()
+        }
+    }
+
+    fun dispatchStart() {
+        if (isDestroyed || mapView.isDestroyed || started) return
+        runCatching {
+            mapView.onStart()
+            started = true
+        }
+    }
+
+    fun dispatchResume() {
+        if (isDestroyed || mapView.isDestroyed) return
+        if (!started) dispatchStart()
+        if (resumed) return
+        runCatching {
+            mapView.onResume()
+            resumed = true
+        }
+    }
+
+    fun dispatchPause() {
+        if (isDestroyed || !resumed) return
+        runCatching { mapView.onPause() }
+        resumed = false
+    }
+
+    fun dispatchStop() {
+        if (isDestroyed) return
+        if (resumed) dispatchPause()
+        if (!started) return
+        runCatching { mapView.onStop() }
+        started = false
+    }
+
+    fun dispatchLowMemory() {
+        if (isDestroyed || mapView.isDestroyed) return
+        runCatching { mapView.onLowMemory() }
+    }
+
+    fun dispatchDestroy() {
+        if (isDestroyed) return
+        dispatchStop()
+        isDestroyed = true
+        runCatching {
+            if (!mapView.isDestroyed) {
+                mapView.onDestroy()
+            }
+        }
+    }
 }
 
 @SuppressLint("MissingPermission")
@@ -359,7 +476,7 @@ private fun activateLocationComponentSafely(
     runCatching {
         val options = LocationComponentActivationOptions
             .builder(context, style)
-            .useDefaultLocationEngine(true)
+            .useDefaultLocationEngine(false)
             .build()
         val lc = map.locationComponent
         if (!lc.isLocationComponentActivated) {
@@ -370,6 +487,15 @@ private fun activateLocationComponentSafely(
         lc.renderMode = RenderMode.COMPASS
     }
 }
+
+private fun LocationSnapshot.toAndroidLocation(): android.location.Location =
+    android.location.Location(provider.ifBlank { "fused" }).apply {
+        latitude = lat
+        longitude = lng
+        accuracy = accuracyMeters
+        bearing = this@toAndroidLocation.bearing
+        time = timestamp
+    }
 
 private fun setupCustomGeoJsonLayers(
     context: Context,

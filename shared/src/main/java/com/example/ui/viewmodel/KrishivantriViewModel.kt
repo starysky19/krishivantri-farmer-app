@@ -62,7 +62,8 @@ data class RazorpaySheetState(
     val title: String,
     val subtitle: String,
     val amount: Double,
-    val purpose: RazorpayPurpose
+    val purpose: RazorpayPurpose,
+    val isAwaitingGatewayResult: Boolean = false
 )
 
 sealed class RazorpayPurpose {
@@ -1437,6 +1438,10 @@ class KrishivantriViewModel(application: Application) : AndroidViewModel(applica
                 kotlinx.coroutines.delay(15_000L)
             }
         }
+    }
+
+    fun markRazorpayGatewayLaunched() {
+        _razorpaySheet.update { it?.copy(isAwaitingGatewayResult = true) }
     }
 
     fun dismissRazorpaySheet() {
